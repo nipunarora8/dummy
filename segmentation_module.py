@@ -22,26 +22,262 @@ class DendriteSegmenter:
         self.weights_path = weights_path
         self.device = device
         self.predictor = None
+
+    def fallback_process_frame(self, frame_idx, image, brightest_path, patch_size=128):
+        """
+        Simple fallback method for segmentation when SAM2 is not available
+        This uses basic image processing to create a tube-like mask around the path
+        """
+        print(f"Using fallback segmentation for frame {frame_idx}")
         
+        # Extract current frame from image volume
+        frame = image[frame_idx]
+        height, width = frame.shape
+        
+        # Initialize empty mask
+        mask = np.zeros((height, width), dtype=np.uint8)
+        
+        # Get points that belong to this frame
+        frame_points = []
+        for point in brightest_path:
+            if int(point[0]) == frame_idx:
+                # Extract y, x coordinates
+                frame_points.append((int(point[1]), int(point[2])))
+        
+        # If no points in this frame, check neighboring frames
+        if not frame_points:
+            frame_range = 2  # Check 2 frames before and after
+            nearby_points = []
+            for point in brightest_path:
+                if abs(int(point[0]) - frame_idx) <= frame_range:
+                    nearby_points.append((int(point[1]), int(point[2])))
+            
+            # Use nearby points if available
+            if nearby_points:
+                frame_points = nearby_points
+        
+        # If we have points, draw a tube around the path
+        if frame_points:
+            # Sort points to ensure coherent path
+            frame_points.sort()  # Simple sorting might not be ideal but works for testing
+            
+            # Generate mask by drawing lines between points with thickness
+            import cv2
+            
+            # Draw thick lines connecting points
+            thickness = 10  # Thickness of the path
+            for i in range(len(frame_points) - 1):
+                cv2.line(mask, 
+                        (frame_points[i][1], frame_points[i][0]),
+                        (frame_points[i+1][1], frame_points[i+1][0]), 
+                        1, thickness)
+            
+            # Dilate the mask to create a "tube"
+            kernel = np.ones((5, 5), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=2)
+            
+            print(f"Created fallback mask for frame {frame_idx} with {len(frame_points)} points")
+        else:
+            print(f"No points found for frame {frame_idx}, mask will be empty")
+        
+        return mask
+
+    def try_fallback_segmentation(self, image, brightest_path, start_frame, end_frame, progress_callback=None):
+        """
+        Use fallback segmentation method if SAM2 segmentation fails
+        """
+        print("Using fallback segmentation method...")
+        
+        # Initialize output mask volume
+        pred_masks = np.zeros((len(image), image[0].shape[0], image[0].shape[1]), dtype=np.uint8)
+        
+        # Process each frame
+        total_frames = end_frame - start_frame + 1
+        for i, frame_idx in enumerate(range(start_frame, end_frame + 1)):
+            if progress_callback:
+                progress_callback(i, total_frames)
+            else:
+                print(f"Processing frame {frame_idx}/{end_frame} ({i+1}/{total_frames})")
+                
+            # Skip if frame index is out of bounds
+            if frame_idx < 0 or frame_idx >= len(image):
+                continue
+                
+            pred_masks[frame_idx] = self.fallback_process_frame(
+                frame_idx, image, brightest_path
+            )
+        
+        return pred_masks
+   
+    # Replace the load_model method in the DendriteSegmenter class with this improved version
+
     def load_model(self):
-        """Load the segmentation model"""
+        """Load the segmentation model with improved error reporting and path handling"""
         try:
-            from sam2.build_sam import build_sam2
-            from sam2.sam2_image_predictor import SAM2ImagePredictor
+            print(f"Loading model from {self.model_path} with config {self.config_path}")
+            print(f"Using weights from {self.weights_path}")
+            
+            # Try to ensure SAM2 module is in path
+            self._ensure_sam2_in_path()
+            
+            # Try importing first to catch import errors
+            try:
+                from sam2.build_sam import build_sam2
+                from sam2.sam2_image_predictor import SAM2ImagePredictor
+                print("Successfully imported SAM2 modules")
+            except ImportError as ie:
+                print(f"Failed to import SAM2 modules: {str(ie)}")
+                print("Make sure the SAM2 package is installed and in the Python path")
+                return False
             
             # Use bfloat16 for memory efficiency
             torch.autocast(device_type="cpu", dtype=torch.bfloat16).__enter__()
             
+            # Check if files exist
+            import os
+            if not os.path.exists(self.model_path):
+                print(f"Error: Model path does not exist: {self.model_path}")
+                # Try to find the file in alternative locations
+                alt_locations = [
+                    "checkpoints/sam2.1_hiera_small.pt",
+                    "../checkpoints/sam2.1_hiera_small.pt",
+                    "./sam2.1_hiera_small.pt",
+                    "../sam2.1_hiera_small.pt"
+                ]
+                for loc in alt_locations:
+                    if os.path.exists(loc):
+                        print(f"Found model at alternative location: {loc}")
+                        self.model_path = loc
+                        break
+                else:
+                    return False
+                    
+            if not os.path.exists(self.config_path):
+                print(f"Error: Config path does not exist: {self.config_path}")
+                # Try to find the file in alternative locations
+                alt_locations = [
+                    "sam2.1_hiera_s.yaml",
+                    "../sam2.1_hiera_s.yaml",
+                    "checkpoints/sam2.1_hiera_s.yaml",
+                    "../checkpoints/sam2.1_hiera_s.yaml"
+                ]
+                for loc in alt_locations:
+                    if os.path.exists(loc):
+                        print(f"Found config at alternative location: {loc}")
+                        self.config_path = loc
+                        break
+                else:
+                    return False
+                    
+            if not os.path.exists(self.weights_path):
+                print(f"Error: Weights path does not exist: {self.weights_path}")
+                # Try to find the file in alternative locations
+                alt_locations = [
+                    "results/samv2_small_2025-03-06-17-13-15/model_22500.torch",
+                    "../results/samv2_small_2025-03-06-17-13-15/model_22500.torch",
+                    "./model_22500.torch",
+                    "../model_22500.torch"
+                ]
+                for loc in alt_locations:
+                    if os.path.exists(loc):
+                        print(f"Found weights at alternative location: {loc}")
+                        self.weights_path = loc
+                        break
+                else:
+                    return False
+            
             # Build model and load weights
+            print("Building SAM2 model...")
             sam2_model = build_sam2(self.config_path, self.model_path, device=self.device)
+            print("Creating SAM2 image predictor...")
             self.predictor = SAM2ImagePredictor(sam2_model)
+            print("Loading model weights...")
             self.predictor.model.load_state_dict(torch.load(self.weights_path, map_location=self.device))
+            print("Model loaded successfully")
             
             return True
         except Exception as e:
             print(f"Error loading model: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return False
-    
+
+    def _ensure_sam2_in_path(self):
+        """Make sure SAM2 module is in Python path"""
+        print("Checking Python path for SAM2 module...")
+        
+        import sys
+        import os
+        
+        # First check if we can already import
+        try:
+            from sam2.build_sam import build_sam2
+            print("SAM2 module is already in Python path")
+            return True
+        except ImportError:
+            pass
+        
+        # Common locations to check
+        possible_paths = [
+            '../path_tracing/brightest-path-lib/sam2',
+            'path_tracing/brightest-path-lib/sam2',
+            './sam2',
+            '../sam2',
+            '../path_tracing/sam2',
+            'path_tracing/sam2',
+        ]
+        
+        # Try adding the parent directory that might contain sam2
+        for path in possible_paths:
+            if os.path.exists(path):
+                parent_dir = os.path.dirname(os.path.abspath(path))
+                if parent_dir not in sys.path:
+                    print(f"Adding {parent_dir} to Python path")
+                    sys.path.append(parent_dir)
+                
+                # Check if we can now import
+                try:
+                    from sam2.build_sam import build_sam2
+                    print(f"Successfully added SAM2 module from {parent_dir}")
+                    return True
+                except ImportError:
+                    continue
+        
+        # Add the parent directory based on the module location
+        try:
+            # First check if we're in a module that's been imported
+            import inspect
+            current_file = inspect.getfile(self.__class__)
+            current_dir = os.path.dirname(os.path.abspath(current_file))
+            
+            # Try adding current directory and parent to path
+            if current_dir not in sys.path:
+                sys.path.append(current_dir)
+            
+            parent_dir = os.path.dirname(current_dir)
+            if parent_dir not in sys.path:
+                sys.path.append(parent_dir)
+            
+            # Check if we can now import
+            try:
+                from sam2.build_sam import build_sam2
+                print(f"Successfully added SAM2 module from path")
+                return True
+            except ImportError:
+                pass
+                
+        except Exception as e:
+            print(f"Error determining module path: {e}")
+        
+        print("Could not find SAM2 module in any standard location")
+        # Print current Python path
+        print("Current Python path:")
+        for p in sys.path:
+            print(f"  {p}")
+        
+        return False
+
+
     def predict_mask(self, img, positive_points, negative_points):
         """
         Predict mask using SAM with positive and negative prompt points

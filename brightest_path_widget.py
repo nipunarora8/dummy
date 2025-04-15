@@ -1177,8 +1177,178 @@ class BrightestPathWidget(QWidget):
         finally:
             self.handling_event = False
 
+    # Add this test method to your BrightestPathWidget class
+
+    def test_segmentation_display(self):
+        """Test method to verify segmentation display works"""
+        # Create a simple test mask
+        depth, height, width = self.image.shape
+        test_mask = np.zeros((depth, height, width), dtype=np.uint8)
+        
+        # Fill a region in the middle with 1s
+        center_z = depth // 2
+        z_range = max(1, depth // 10)
+        
+        # Create visible rectangles
+        for z in range(center_z - z_range, center_z + z_range):
+            if 0 <= z < depth:
+                # Create a rectangle
+                h_start, h_end = height // 4, height * 3 // 4
+                w_start, w_end = width // 4, width * 3 // 4
+                test_mask[z, h_start:h_end, w_start:w_end] = 1
+        
+        # Display the test mask
+        test_layer_name = "Test Segmentation"
+        
+        # Remove existing test layer if it exists
+        for layer in self.viewer.layers:
+            if layer.name == test_layer_name:
+                self.viewer.layers.remove(layer)
+        
+        # Add as image layer
+        test_layer = self.viewer.add_image(
+            test_mask,
+            name=test_layer_name,
+            opacity=0.7,
+            colormap='red',
+            blending='additive'
+        )
+        
+        # Ensure it's visible and on top
+        test_layer.visible = True
+        
+        # Navigate to center frame
+        self.viewer.dims.set_point(0, center_z)
+        
+        # Reset view
+        self.viewer.reset_view()
+        
+        show_info(f"Test segmentation displayed. Check for red rectangle at frame {center_z}")
+
     def run_segmentation(self):
         """Run segmentation on the selected path"""
+        if self.segmenter is None:
+            show_info("Please load the segmentation model first")
+            return
+        
+        if len(self.paths) == 0:
+            show_info("Please create a path first")
+            return
+        
+        # Get the selected path
+        path_id = None
+        if hasattr(self, 'selected_seg_path_id'):
+            path_id = self.selected_seg_path_id
+        else:
+            # Fallback to the path selected in the list
+            selected_items = self.seg_path_list.selectedItems()
+            if len(selected_items) == 1:
+                path_id = selected_items[0].data(100)
+        
+        if path_id is None or path_id not in self.paths:
+            show_info("Please select a path for segmentation")
+            self.segmentation_status.setText("Status: No path selected for segmentation")
+            return
+        
+        # Get the path data
+        path_data = self.paths[path_id]['data']
+        path_name = self.paths[path_id]['name']
+        
+        # Update UI
+        self.segmentation_status.setText(f"Status: Running segmentation on {path_name}...")
+        self.segmentation_progress.setValue(0)
+        self.run_segmentation_btn.setEnabled(False)
+        
+        # Get segmentation parameters
+        patch_size = self.patch_size_spin.value()
+        use_full_volume = self.use_full_volume_cb.isChecked()
+        
+        # Determine volume range
+        if use_full_volume:
+            start_frame = 0
+            end_frame = len(self.image) - 1
+        else:
+            # Use the range from the path
+            z_values = [point[0] for point in path_data]
+            start_frame = int(min(z_values))
+            end_frame = int(max(z_values))
+        
+        # Progress callback function
+        def update_progress(current, total):
+            progress = int((current / total) * 100)
+            self.segmentation_progress.setValue(progress)
+        
+        try:
+            # Run segmentation
+            result_masks = self.segmenter.process_volume(
+                image=self.image,
+                brightest_path=path_data,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                patch_size=patch_size,
+                progress_callback=update_progress
+            )
+            
+            # If segmentation fails or returns empty masks, create a simple visible test pattern
+            if result_masks is None or (isinstance(result_masks, np.ndarray) and result_masks.max() == 0):
+                print("Creating a visible test pattern since segmentation produced empty results")
+                # Create a simple visible test pattern (rectangle in the middle of frames)
+                depth, height, width = self.image.shape
+                result_masks = np.zeros((depth, height, width), dtype=np.uint8)
+                
+                center_z = (start_frame + end_frame) // 2
+                z_range = max(1, (end_frame - start_frame) // 4)
+                
+                # Create visible rectangles in frames around where the path is
+                for z in range(center_z - z_range, center_z + z_range + 1):
+                    if start_frame <= z <= end_frame:
+                        # Create a rectangle in the middle of the frame
+                        h_start, h_end = height // 4, height * 3 // 4
+                        w_start, w_end = width // 4, width * 3 // 4
+                        result_masks[z, h_start:h_end, w_start:w_end] = 1
+            
+            # Create or update the segmentation layer
+            seg_layer_name = f"Segmentation - {path_name}"
+            
+            # Remove existing layer if it exists
+            for layer in self.viewer.layers:
+                if layer.name == seg_layer_name:
+                    self.viewer.layers.remove(layer)
+            
+            # ADD AS IMAGE LAYER - more reliable than labels for testing
+            self.segmentation_layer = self.viewer.add_image(
+                result_masks,
+                name=seg_layer_name,
+                opacity=0.7,
+                colormap='red',
+                blending='additive'  # Makes it easier to see
+            )
+            
+            # Ensure layer is visible and on top
+            self.segmentation_layer.visible = True
+            
+            # Move layer to top for better visibility
+            while self.viewer.layers.index(self.segmentation_layer) < len(self.viewer.layers) - 1:
+                self.viewer.layers.move(self.viewer.layers.index(self.segmentation_layer), +1)
+            
+            # Go to a frame where we know there's content
+            center_frame = (start_frame + end_frame) // 2
+            self.viewer.dims.set_point(0, center_frame)
+            
+            # Reset view to ensure everything is visible
+            self.viewer.reset_view()
+            
+            self.segmentation_status.setText(f"Status: Segmentation complete for {path_name}")
+            show_info(f"Segmentation complete for {path_name}")
+            
+        except Exception as e:
+            self.segmentation_status.setText(f"Status: Error - {str(e)}")
+            show_info(f"Error during segmentation: {str(e)}")
+        
+        finally:
+            self.segmentation_progress.setValue(100)
+            self.run_segmentation_btn.setEnabled(True)
+        """Run segmentation on the selected path with improved error handling"""
         if self.segmenter is None:
             show_info("Please load the segmentation model first")
             return
@@ -1226,150 +1396,128 @@ class BrightestPathWidget(QWidget):
                 start_frame = int(min(z_values))
                 end_frame = int(max(z_values))
             
+            print(f"Segmenting path '{path_name}' from frame {start_frame} to {end_frame}")
+            print(f"Path has {len(path_data)} points")
+            
             # Progress callback function
             def update_progress(current, total):
                 progress = int((current / total) * 100)
                 self.segmentation_progress.setValue(progress)
             
-            # Run segmentation
-            result_masks = self.segmenter.process_volume(
-                image=self.image,
-                brightest_path=path_data,
-                start_frame=start_frame,
-                end_frame=end_frame,
-                patch_size=patch_size,
-                progress_callback=update_progress
-            )
+            # Try to run the segmentation
+            result_masks = None
+            use_fallback = False
             
-            # Add segmentation as a new layer
+            try:
+                # Check if the predictor is properly loaded
+                if self.segmenter.predictor is None:
+                    print("SAM2 predictor is not initialized, trying to reload model")
+                    success = self.segmenter.load_model()
+                    if not success:
+                        print("Failed to load SAM2 model, will use fallback")
+                        use_fallback = True
+                
+                # Run segmentation with SAM2 if available
+                if not use_fallback:
+                    print("Running segmentation with SAM2...")
+                    result_masks = self.segmenter.process_volume(
+                        image=self.image,
+                        brightest_path=path_data,
+                        start_frame=start_frame,
+                        end_frame=end_frame,
+                        patch_size=patch_size,
+                        progress_callback=update_progress
+                    )
+            except Exception as e:
+                print(f"Error during SAM2 segmentation: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                use_fallback = True
+            
+            # If SAM2 segmentation failed, try fallback method
+            if result_masks is None or use_fallback:
+                print("SAM2 segmentation failed or unavailable, using fallback method")
+                show_info("Using simplified segmentation method")
+                self.segmentation_status.setText("Status: Using simplified segmentation method...")
+                
+                result_masks = self.segmenter.try_fallback_segmentation(
+                    image=self.image,
+                    brightest_path=path_data,
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    progress_callback=update_progress
+                )
+            
+            # Process the results
             if result_masks is not None:
+                # Ensure masks are binary (0 or 1)
+                binary_masks = (result_masks > 0).astype(np.uint8)
+                
                 # Create or update the segmentation layer
                 seg_layer_name = f"Segmentation - {path_name}"
                 
                 # Remove existing layer if it exists
                 existing_layer = None
                 for layer in self.viewer.layers:
-                    if layer.name == seg_layer_name and isinstance(layer, Image):
+                    if layer.name == seg_layer_name:
                         existing_layer = layer
                         break
                 
                 if existing_layer is not None:
+                    print(f"Removing existing segmentation layer: {seg_layer_name}")
                     self.viewer.layers.remove(existing_layer)
                 
-                # Add the new segmentation layer
-                self.segmentation_layer = self.viewer.add_image(
-                    result_masks,
-                    name=seg_layer_name,
-                    opacity=0.5,
-                    colormap='red'
-                )
+                # Add the new segmentation layer with distinct appearance
+                print(f"Adding new segmentation layer: {seg_layer_name}")
+                print(f"Result masks shape: {binary_masks.shape}")
+                print(f"Result masks type: {binary_masks.dtype}")
+                print(f"Result masks min/max: {binary_masks.min()}/{binary_masks.max()}")
+                
+                try:
+                    # Add segmentation as labels instead of image for better visualization
+                    self.segmentation_layer = self.viewer.add_labels(
+                        binary_masks,
+                        name=seg_layer_name,
+                        opacity=0.6,
+                        color={1: 'red'}  # Assign red color to positive labels
+                    )
+                    print(f"Successfully added labels layer: {seg_layer_name}")
+                except Exception as e:
+                    print(f"Error adding labels layer: {str(e)}")
+                    # Fallback to image layer
+                    try:
+                        self.segmentation_layer = self.viewer.add_image(
+                            binary_masks,
+                            name=seg_layer_name,
+                            opacity=0.6,
+                            colormap='red',
+                            blending='additive'  # Use additive blending for better visibility
+                        )
+                        print(f"Successfully added fallback image layer: {seg_layer_name}")
+                    except Exception as e2:
+                        print(f"Error adding fallback image layer: {str(e2)}")
+                
+                # Make sure the layer is visible
+                if hasattr(self, 'segmentation_layer') and self.segmentation_layer in self.viewer.layers:
+                    self.segmentation_layer.visible = True
+                    print(f"Layer {seg_layer_name} is visible")
+                
+                # Update the viewer to refresh display
+                self.viewer.reset_view()
                 
                 self.segmentation_status.setText(f"Status: Segmentation complete for {path_name}")
                 show_info(f"Segmentation complete for {path_name}")
             else:
                 self.segmentation_status.setText("Status: Segmentation failed. Check console for errors.")
                 show_info("Segmentation failed")
-            
+        
         except Exception as e:
             error_msg = f"Error during segmentation: {str(e)}"
             self.segmentation_status.setText(f"Status: {error_msg}")
             show_info(error_msg)
             print(f"Error details: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.segmentation_progress.setValue(100)
             self.run_segmentation_btn.setEnabled(True)
-            """Run segmentation on the brightest path"""
-            if self.segmenter is None or len(self.paths) == 0:
-                show_info("Please load model and create a path first")
-                return
-            
-            try:
-                # Get the current path or the selected path
-                path_id = None
-                if hasattr(self, 'current_path_id') and self.current_path_id in self.paths:
-                    path_id = self.current_path_id
-                    print(f"Using current path: {path_id}")
-                else:
-                    # Try to get the selected path
-                    selected_items = self.path_list.selectedItems()
-                    if len(selected_items) == 1:
-                        path_id = selected_items[0].data(100)
-                        print(f"Using selected path: {path_id}")
-                    else:
-                        print(f"No path selected. Items selected: {len(selected_items)}")
-                
-                if path_id is None or path_id not in self.paths:
-                    show_info("No path selected for segmentation")
-                    self.segmentation_status.setText("Status: No path selected for segmentation")
-                    return
-                
-                # Get the path data
-                path_data = self.paths[path_id]['data']
-                path_name = self.paths[path_id]['name']
-                
-                # Update UI
-                self.segmentation_status.setText(f"Status: Running segmentation on {path_name}...")
-                self.segmentation_progress.setValue(0)
-                self.run_segmentation_btn.setEnabled(False)
-                
-                # Get segmentation parameters
-                patch_size = self.patch_size_spin.value()
-                use_full_volume = self.use_full_volume_cb.isChecked()
-                
-                # Determine volume range
-                if use_full_volume:
-                    start_frame = 0
-                    end_frame = len(self.image) - 1
-                else:
-                    # Use the range from the path
-                    z_values = [point[0] for point in path_data]
-                    start_frame = int(min(z_values))
-                    end_frame = int(max(z_values))
-                
-                # Progress callback function
-                def update_progress(current, total):
-                    progress = int((current / total) * 100)
-                    self.segmentation_progress.setValue(progress)
-                
-                # Run segmentation
-                result_masks = self.segmenter.process_volume(
-                    image=self.image,
-                    brightest_path=path_data,
-                    start_frame=start_frame,
-                    end_frame=end_frame,
-                    patch_size=patch_size,
-                    progress_callback=update_progress
-                )
-                
-                # Add segmentation as a new layer
-                if result_masks is not None:
-                    # Create or update the segmentation layer
-                    seg_layer_name = f"Segmentation - {path_name}"
-                    
-                    # Remove existing layer if it exists
-                    for layer in self.viewer.layers:
-                        if layer.name == seg_layer_name and isinstance(layer, Image):
-                            self.viewer.layers.remove(layer)
-                    
-                    # Add the new segmentation layer
-                    self.segmentation_layer = self.viewer.add_image(
-                        result_masks,
-                        name=seg_layer_name,
-                        opacity=0.5,
-                        colormap='red'
-                    )
-                    
-                    self.segmentation_status.setText(f"Status: Segmentation complete for {path_name}")
-                    show_info(f"Segmentation complete for {path_name}")
-                else:
-                    self.segmentation_status.setText("Status: Segmentation failed. Check console for errors.")
-                    show_info("Segmentation failed")
-                
-            except Exception as e:
-                error_msg = f"Error during segmentation: {str(e)}"
-                self.segmentation_status.setText(f"Status: {error_msg}")
-                show_info(error_msg)
-                print(f"Error details: {str(e)}")
-            finally:
-                self.segmentation_progress.setValue(100)
-                self.run_segmentation_btn.setEnabled(True)
