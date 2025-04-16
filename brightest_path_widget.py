@@ -1406,47 +1406,14 @@ class BrightestPathWidget(QWidget):
             
             # Try to run the segmentation
             result_masks = None
-            use_fallback = False
-            
-            try:
-                # Check if the predictor is properly loaded
-                if self.segmenter.predictor is None:
-                    print("SAM2 predictor is not initialized, trying to reload model")
-                    success = self.segmenter.load_model()
-                    if not success:
-                        print("Failed to load SAM2 model, will use fallback")
-                        use_fallback = True
-                
-                # Run segmentation with SAM2 if available
-                if not use_fallback:
-                    print("Running segmentation with SAM2...")
-                    result_masks = self.segmenter.process_volume(
-                        image=self.image,
-                        brightest_path=path_data,
-                        start_frame=start_frame,
-                        end_frame=end_frame,
-                        patch_size=patch_size,
-                        progress_callback=update_progress
-                    )
-            except Exception as e:
-                print(f"Error during SAM2 segmentation: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                use_fallback = True
-            
-            # If SAM2 segmentation failed, try fallback method
-            if result_masks is None or use_fallback:
-                print("SAM2 segmentation failed or unavailable, using fallback method")
-                show_info("Using simplified segmentation method")
-                self.segmentation_status.setText("Status: Using simplified segmentation method...")
-                
-                result_masks = self.segmenter.try_fallback_segmentation(
-                    image=self.image,
-                    brightest_path=path_data,
-                    start_frame=start_frame,
-                    end_frame=end_frame,
-                    progress_callback=update_progress
-                )
+            result_masks = self.segmenter.process_volume(
+                image=self.image,
+                brightest_path=path_data,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                patch_size=patch_size,
+                progress_callback=update_progress
+            )
             
             # Process the results
             if result_masks is not None:
