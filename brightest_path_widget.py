@@ -1473,29 +1473,12 @@ class BrightestPathWidget(QWidget):
                 print(f"Result masks type: {binary_masks.dtype}")
                 print(f"Result masks min/max: {binary_masks.min()}/{binary_masks.max()}")
                 
-                try:
-                    # Add segmentation as labels instead of image for better visualization
-                    self.segmentation_layer = self.viewer.add_labels(
-                        binary_masks,
-                        name=seg_layer_name,
-                        opacity=0.6,
-                        color={1: 'red'}  # Assign red color to positive labels
-                    )
-                    print(f"Successfully added labels layer: {seg_layer_name}")
-                except Exception as e:
-                    print(f"Error adding labels layer: {str(e)}")
-                    # Fallback to image layer
-                    try:
-                        self.segmentation_layer = self.viewer.add_image(
-                            binary_masks,
-                            name=seg_layer_name,
-                            opacity=0.6,
-                            colormap='red',
-                            blending='additive'  # Use additive blending for better visibility
-                        )
-                        print(f"Successfully added fallback image layer: {seg_layer_name}")
-                    except Exception as e2:
-                        print(f"Error adding fallback image layer: {str(e2)}")
+                # Add segmentation as labels instead of image for better visualization
+                self.segmentation_layer = self.viewer.add_labels(
+                    binary_masks,
+                    name=seg_layer_name,
+                    opacity=0.6
+                )
                 
                 # Make sure the layer is visible
                 if hasattr(self, 'segmentation_layer') and self.segmentation_layer in self.viewer.layers:

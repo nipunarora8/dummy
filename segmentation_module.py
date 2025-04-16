@@ -117,9 +117,6 @@ class DendriteSegmenter:
             print(f"Loading model from {self.model_path} with config {self.config_path}")
             print(f"Using weights from {self.weights_path}")
             
-            # Try to ensure SAM2 module is in path
-            self._ensure_sam2_in_path()
-            
             # Try importing first to catch import errors
             try:
                 from sam2.build_sam import build_sam2
@@ -132,60 +129,7 @@ class DendriteSegmenter:
             
             # Use bfloat16 for memory efficiency
             torch.autocast(device_type="cpu", dtype=torch.bfloat16).__enter__()
-            
-            # Check if files exist
-            import os
-            if not os.path.exists(self.model_path):
-                print(f"Error: Model path does not exist: {self.model_path}")
-                # Try to find the file in alternative locations
-                alt_locations = [
-                    "checkpoints/sam2.1_hiera_small.pt",
-                    "../checkpoints/sam2.1_hiera_small.pt",
-                    "./sam2.1_hiera_small.pt",
-                    "../sam2.1_hiera_small.pt"
-                ]
-                for loc in alt_locations:
-                    if os.path.exists(loc):
-                        print(f"Found model at alternative location: {loc}")
-                        self.model_path = loc
-                        break
-                else:
-                    return False
-                    
-            if not os.path.exists(self.config_path):
-                print(f"Error: Config path does not exist: {self.config_path}")
-                # Try to find the file in alternative locations
-                alt_locations = [
-                    "sam2.1_hiera_s.yaml",
-                    "../sam2.1_hiera_s.yaml",
-                    "checkpoints/sam2.1_hiera_s.yaml",
-                    "../checkpoints/sam2.1_hiera_s.yaml"
-                ]
-                for loc in alt_locations:
-                    if os.path.exists(loc):
-                        print(f"Found config at alternative location: {loc}")
-                        self.config_path = loc
-                        break
-                else:
-                    return False
-                    
-            if not os.path.exists(self.weights_path):
-                print(f"Error: Weights path does not exist: {self.weights_path}")
-                # Try to find the file in alternative locations
-                alt_locations = [
-                    "results/samv2_small_2025-03-06-17-13-15/model_22500.torch",
-                    "../results/samv2_small_2025-03-06-17-13-15/model_22500.torch",
-                    "./model_22500.torch",
-                    "../model_22500.torch"
-                ]
-                for loc in alt_locations:
-                    if os.path.exists(loc):
-                        print(f"Found weights at alternative location: {loc}")
-                        self.weights_path = loc
-                        break
-                else:
-                    return False
-            
+
             # Build model and load weights
             print("Building SAM2 model...")
             sam2_model = build_sam2(self.config_path, self.model_path, device=self.device)
@@ -201,82 +145,6 @@ class DendriteSegmenter:
             import traceback
             traceback.print_exc()
             return False
-
-    def _ensure_sam2_in_path(self):
-        """Make sure SAM2 module is in Python path"""
-        print("Checking Python path for SAM2 module...")
-        
-        import sys
-        import os
-        
-        # First check if we can already import
-        try:
-            from sam2.build_sam import build_sam2
-            print("SAM2 module is already in Python path")
-            return True
-        except ImportError:
-            pass
-        
-        # Common locations to check
-        possible_paths = [
-            '../path_tracing/brightest-path-lib/sam2',
-            'path_tracing/brightest-path-lib/sam2',
-            './sam2',
-            '../sam2',
-            '../path_tracing/sam2',
-            'path_tracing/sam2',
-        ]
-        
-        # Try adding the parent directory that might contain sam2
-        for path in possible_paths:
-            if os.path.exists(path):
-                parent_dir = os.path.dirname(os.path.abspath(path))
-                if parent_dir not in sys.path:
-                    print(f"Adding {parent_dir} to Python path")
-                    sys.path.append(parent_dir)
-                
-                # Check if we can now import
-                try:
-                    from sam2.build_sam import build_sam2
-                    print(f"Successfully added SAM2 module from {parent_dir}")
-                    return True
-                except ImportError:
-                    continue
-        
-        # Add the parent directory based on the module location
-        try:
-            # First check if we're in a module that's been imported
-            import inspect
-            current_file = inspect.getfile(self.__class__)
-            current_dir = os.path.dirname(os.path.abspath(current_file))
-            
-            # Try adding current directory and parent to path
-            if current_dir not in sys.path:
-                sys.path.append(current_dir)
-            
-            parent_dir = os.path.dirname(current_dir)
-            if parent_dir not in sys.path:
-                sys.path.append(parent_dir)
-            
-            # Check if we can now import
-            try:
-                from sam2.build_sam import build_sam2
-                print(f"Successfully added SAM2 module from path")
-                return True
-            except ImportError:
-                pass
-                
-        except Exception as e:
-            print(f"Error determining module path: {e}")
-        
-        print("Could not find SAM2 module in any standard location")
-        # Print current Python path
-        print("Current Python path:")
-        for p in sys.path:
-            print(f"  {p}")
-        
-        return False
-
 
     def predict_mask(self, img, positive_points, negative_points):
         """

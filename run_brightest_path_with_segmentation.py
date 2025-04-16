@@ -2,6 +2,7 @@ import napari
 import numpy as np
 import imageio as io
 from brightest_path_widget import BrightestPathWidget
+from segmentation_module import DendriteSegmenter
 
 def run_interactive_path_finder(image):
     """
@@ -42,11 +43,14 @@ if __name__ == "__main__":
     # Load the image
     image_path = '../DeepD3_Benchmark.tif'
     benchmark = np.asarray(io.imread(image_path))
-    
+   
     # Normalize image to 0-1 range for better visualization
-    if benchmark.max() > 0:
+    if benchmark.max() > 1:
         benchmark = benchmark.astype(np.float32)
         benchmark = (benchmark - benchmark.min()) / (benchmark.max() - benchmark.min())
+        seg = DendriteSegmenter()
+        benchmark = seg.pad_image_for_patches(benchmark)[0]
+        
     
     # Launch the viewer
     viewer = run_interactive_path_finder(benchmark)
