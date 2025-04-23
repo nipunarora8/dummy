@@ -29,11 +29,13 @@ def run_interactive_path_finder(image):
         viewer.dims.set_point(0, mid_slice)
     
     print("\n===== BRIGHTEST PATH FINDER WITH SEGMENTATION =====")
-    print("1. Click on the image to set start and end points")
-    print("2. Click 'Find Path' to calculate the path")
-    print("3. Go to the Segmentation tab to run dendrite segmentation")
-    print("4. Use 'Load Segmentation Model' to initialize the model")
-    print("5. Click 'Run Segmentation' to segment along the path")
+    print("1. Click on the image to set multiple waypoints")
+    print("2. Click 'Find Path Through Waypoints' to calculate the path")
+    print("3. The path will automatically detect the best start and end points")
+    print("4. Use 'Trace Another Path' to start tracing a new path while keeping existing ones")
+    print("5. Go to the Segmentation tab to run dendrite segmentation")
+    print("6. Use 'Load Segmentation Model' to initialize the model")
+    print("7. Click 'Run Segmentation' to segment along the path")
     print("=======================================\n")
     
     return viewer

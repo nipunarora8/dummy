@@ -11,7 +11,7 @@ from qtpy.QtWidgets import (
 )
 import sys
 sys.path.append('../path_tracing/brightest-path-lib')
-from brightest_path_lib.algorithm import BidirectionalAStarSearch
+from brightest_path_lib.algorithm import BidirectionalAStarSearch, WaypointBidirectionalAStarSearch
 import sys
 import uuid
 from segmentation_module import DendriteSegmenter
@@ -22,8 +22,9 @@ class BrightestPathWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self.image = image
-        self.start_point = None
-        self.end_point = None
+        
+        # List to store multiple waypoints
+        self.waypoints = []  
         
         # Track multiple paths
         self.paths = {}  # Dictionary to store multiple paths
@@ -43,19 +44,12 @@ class BrightestPathWidget(QWidget):
             self.image, name='Image', colormap='gray'
         )
         
-        self.start_points_layer = self.viewer.add_points(
+        # Create a waypoints layer instead of separate start/end layers
+        self.waypoints_layer = self.viewer.add_points(
             np.empty((0, self.image.ndim)),
-            name='Start Point',
+            name='Waypoints',
             size=15,
-            face_color='lime',
-            symbol='x'
-        )
-        
-        self.end_points_layer = self.viewer.add_points(
-            np.empty((0, self.image.ndim)),
-            name='End Point',
-            size=15,
-            face_color='red',
+            face_color='cyan',
             symbol='x'
         )
         
@@ -74,16 +68,14 @@ class BrightestPathWidget(QWidget):
         self.setup_ui()
         
         # Set up event handling for points layers
-        self.start_points_layer.events.data.connect(self.on_start_point_changed)
-        self.end_points_layer.events.data.connect(self.on_end_point_changed)
+        self.waypoints_layer.events.data.connect(self.on_waypoints_changed)
         
-        # Default mode for points layers
-        self.start_points_layer.mode = 'add'
-        self.end_points_layer.mode = 'add'
+        # Default mode for waypoints layer
+        self.waypoints_layer.mode = 'add'
         
-        # By default, activate the start point layer to begin workflow
-        self.viewer.layers.selection.active = self.start_points_layer
-        show_info("Start point layer activated. Click on the image to set start point.")
+        # By default, activate the waypoints layer to begin workflow
+        self.viewer.layers.selection.active = self.waypoints_layer
+        show_info("Waypoints layer activated. Click on the image to set waypoints.")
 
     def setup_ui(self):
         """Create the UI panel with controls"""
@@ -103,56 +95,29 @@ class BrightestPathWidget(QWidget):
             point_layout = QVBoxLayout()
             point_selection_tab.setLayout(point_layout)
             
-            # Start point section
-            start_section = QWidget()
-            start_layout = QVBoxLayout()
-            start_section.setLayout(start_layout)
+            # Waypoints section
+            waypoints_section = QWidget()
+            waypoints_layout = QVBoxLayout()
+            waypoints_section.setLayout(waypoints_layout)
             
-            start_instr = QLabel("Click on the image to set the start point.")
-            start_layout.addWidget(start_instr)
+            waypoints_instr = QLabel("Click on the image to set waypoints. A brightest path will be automatically computed through these points.")
+            waypoints_layout.addWidget(waypoints_instr)
             
-            self.select_start_btn = QPushButton("Select Start Point Layer")
-            self.select_start_btn.clicked.connect(self.activate_start_layer)
-            start_layout.addWidget(self.select_start_btn)
+            self.select_waypoints_btn = QPushButton("Select Waypoints Layer")
+            self.select_waypoints_btn.clicked.connect(self.activate_waypoints_layer)
+            waypoints_layout.addWidget(self.select_waypoints_btn)
             
-            self.start_status = QLabel("Status: No start point set")
-            start_layout.addWidget(self.start_status)
-            point_layout.addWidget(start_section)
-            
-            # Separator
-            separator = QFrame()
-            separator.setFrameShape(QFrame.HLine)
-            separator.setFrameShadow(QFrame.Sunken)
-            point_layout.addWidget(separator)
-            
-            # End point section
-            end_section = QWidget()
-            end_layout = QVBoxLayout()
-            end_section.setLayout(end_layout)
-            
-            end_instr = QLabel("Click on the image to set the end point.")
-            end_layout.addWidget(end_instr)
-            
-            self.select_end_btn = QPushButton("Select End Point Layer")
-            self.select_end_btn.clicked.connect(self.activate_end_layer)
-            end_layout.addWidget(self.select_end_btn)
-            
-            self.end_status = QLabel("Status: No end point set")
-            end_layout.addWidget(self.end_status)
-            point_layout.addWidget(end_section)
+            self.waypoints_status = QLabel("Status: No waypoints set")
+            waypoints_layout.addWidget(self.waypoints_status)
+            point_layout.addWidget(waypoints_section)
             
             # Find path button
             find_btns_layout = QHBoxLayout()
             
-            self.find_path_btn = QPushButton("Find Path")
+            self.find_path_btn = QPushButton("Find Path Through Waypoints")
             self.find_path_btn.clicked.connect(self.find_path)
             self.find_path_btn.setEnabled(False)
             find_btns_layout.addWidget(self.find_path_btn)
-            
-            self.retrace_path_btn = QPushButton("Retrace Path")
-            self.retrace_path_btn.clicked.connect(self.retrace_path)
-            self.retrace_path_btn.setEnabled(False)
-            find_btns_layout.addWidget(self.retrace_path_btn)
             
             point_layout.addLayout(find_btns_layout)
             
@@ -325,42 +290,25 @@ class BrightestPathWidget(QWidget):
         except Exception as e:
             print(f"Error setting up UI: {str(e)}")
 
-    def activate_start_layer(self):
-        """Activate the start point layer for selecting"""
+    def activate_waypoints_layer(self):
+        """Activate the waypoints layer for selecting"""
         if self.handling_event:
             return
             
         try:
             self.handling_event = True
-            self.viewer.layers.selection.active = self.start_points_layer
+            self.viewer.layers.selection.active = self.waypoints_layer
             self.error_status.setText("")
-            show_info("Start point layer activated. Click on the image to set start point.")
+            show_info("Waypoints layer activated. Click on the image to set waypoints.")
         except Exception as e:
-            error_msg = f"Error activating start point layer: {str(e)}"
+            error_msg = f"Error activating waypoints layer: {str(e)}"
             show_info(error_msg)
             self.error_status.setText(error_msg)
         finally:
             self.handling_event = False
     
-    def activate_end_layer(self):
-        """Activate the end point layer for selecting"""
-        if self.handling_event:
-            return
-            
-        try:
-            self.handling_event = True
-            self.viewer.layers.selection.active = self.end_points_layer
-            self.error_status.setText("")
-            show_info("End point layer activated. Click on the image to set end point.")
-        except Exception as e:
-            error_msg = f"Error activating end point layer: {str(e)}"
-            show_info(error_msg)
-            self.error_status.setText(error_msg)
-        finally:
-            self.handling_event = False
-    
-    def on_start_point_changed(self, event=None):
-        """Handle when start point is added or changed"""
+    def on_waypoints_changed(self, event=None):
+        """Handle when waypoints are added or changed"""
         # Prevent recursive function calls
         if self.handling_event:
             return
@@ -368,191 +316,106 @@ class BrightestPathWidget(QWidget):
         try:
             self.handling_event = True
             
-            if len(self.start_points_layer.data) > 0:
-                # Keep only the last added point
-                if len(self.start_points_layer.data) > 1:
-                    self.start_points_layer.data = self.start_points_layer.data[-1:]
+            if len(self.waypoints_layer.data) > 0:
+                # Check all points are within image bounds
+                valid_points = []
+                for point in self.waypoints_layer.data:
+                    valid = True
+                    for i, coord in enumerate(point):
+                        if coord < 0 or coord >= self.image.shape[i]:
+                            valid = False
+                            break
+                            
+                    if valid:
+                        valid_points.append(point)
+                    
+                # Update the waypoints layer with only valid points
+                if len(valid_points) != len(self.waypoints_layer.data):
+                    self.waypoints_layer.data = np.array(valid_points)
+                    show_info("Some points were outside image bounds and were removed.")
                 
-                # Store the point
-                self.start_point = self.start_points_layer.data[0].astype(int)
-                
-                # Validate the point is within image bounds
-                valid = True
-                for i, coord in enumerate(self.start_point):
-                    if coord < 0 or coord >= self.image.shape[i]:
-                        valid = False
-                        break
-                        
-                if not valid:
-                    show_info("Start point is outside image bounds. Please try again.")
-                    self.start_points_layer.data = np.empty((0, self.image.ndim))
-                    self.start_point = None
-                    return
+                # Store valid waypoints
+                self.waypoints = [point.astype(int) for point in valid_points]
                 
                 # Update status
-                coords_str = np.array2string(self.start_point, precision=0)
-                self.start_status.setText(f"Status: Start point set at {coords_str}")
+                self.waypoints_status.setText(f"Status: {len(self.waypoints)} waypoints set")
                 
-                # Auto-switch to end point layer
-                self.viewer.layers.selection.active = self.end_points_layer
-                show_info("End point layer activated. Click on the image to set end point.")
-                
-                # Check if we can enable the find path button
-                self.update_find_path_button()
+                # Enable find path button if we have at least 2 waypoints
+                self.find_path_btn.setEnabled(len(self.waypoints) >= 2)
+            else:
+                self.waypoints = []
+                self.waypoints_status.setText("Status: No waypoints set")
+                self.find_path_btn.setEnabled(False)
         except Exception as e:
-            show_info(f"Error setting start point: {str(e)}")
+            show_info(f"Error setting waypoints: {str(e)}")
             print(f"Error details: {str(e)}")
         finally:
             self.handling_event = False
     
-    def on_end_point_changed(self, event=None):
-        """Handle when end point is added or changed"""
-        # Prevent recursive function calls
-        if self.handling_event:
-            return
-            
-        try:
-            self.handling_event = True
-            
-            if len(self.end_points_layer.data) > 0:
-                # Keep only the last added point
-                if len(self.end_points_layer.data) > 1:
-                    self.end_points_layer.data = self.end_points_layer.data[-1:] 
-                
-                # Store the point
-                self.end_point = self.end_points_layer.data[0].astype(int)
-                
-                # Validate the point is within image bounds
-                valid = True
-                for i, coord in enumerate(self.end_point):
-                    if coord < 0 or coord >= self.image.shape[i]:
-                        valid = False
-                        break
-                        
-                if not valid:
-                    show_info("End point is outside image bounds. Please try again.")
-                    self.end_points_layer.data = np.empty((0, self.image.ndim))
-                    self.end_point = None
-                    return
-                
-                # Update status
-                coords_str = np.array2string(self.end_point, precision=0)
-                self.end_status.setText(f"Status: End point set at {coords_str}")
-                
-                # Check if we can enable the find path button
-                self.update_find_path_button()
-        except Exception as e:
-            show_info(f"Error setting end point: {str(e)}")
-            print(f"Error details: {str(e)}")
-        finally:
-            self.handling_event = False
+    def find_distance(self, start_point, end_point):
+        """
+        Calculate the distance between two points in 3D space.
+        
+        Parameters:
+        start_point (np.ndarray): Starting point.
+        end_point (np.ndarray): Ending point.
+        
+        Returns:
+        float: Distance between the two points.
+        """
+        return np.sqrt(np.sum((start_point - end_point) ** 2))
     
-    def update_find_path_button(self):
-        """Enable or disable the find path button based on point selection"""
-        if self.start_point is not None and self.end_point is not None:
-            self.find_path_btn.setEnabled(True)
-            self.retrace_path_btn.setEnabled(True)
-        else:
-            self.find_path_btn.setEnabled(False)
-            self.retrace_path_btn.setEnabled(False)
-    
-    def on_path_selection_changed(self):
-        """Handle when path selection changes in the list"""
-        # Prevent processing during updates
-        if self.handling_event:
-            return
-            
-        try:
-            self.handling_event = True
-            
-            selected_items = self.path_list.selectedItems()
-            num_selected = len(selected_items)
-            
-            # Enable/disable buttons based on selection
-            self.delete_path_btn.setEnabled(num_selected > 0)
-            self.view_path_btn.setEnabled(num_selected == 1)
-            self.connect_paths_btn.setEnabled(num_selected == 2)
-        except Exception as e:
-            show_info(f"Error handling selection change: {str(e)}")
-        finally:
-            self.handling_event = False
-    
-    def view_selected_path(self):
-        """View the selected path from the list"""
-        if self.handling_event:
-            return
-            
-        try:
-            self.handling_event = True
-            
-            selected_items = self.path_list.selectedItems()
-            if len(selected_items) != 1:
-                return
-                
-            item = selected_items[0]
-            path_id = item.data(100)
-            if path_id in self.paths:
-                path_data = self.paths[path_id]
-                
-                # Update the start and end points
-                if path_data['start'] is not None and path_data['end'] is not None:
-                    self.start_point = path_data['start'].copy()
-                    self.end_point = path_data['end'].copy()
-                    
-                    # Update the start and end point layers
-                    self.start_points_layer.data = np.array([self.start_point])
-                    self.end_points_layer.data = np.array([self.end_point])
-                    
-                    # Update UI
-                    self.start_status.setText(f"Status: Start point set at {np.array2string(self.start_point, precision=0)}")
-                    self.end_status.setText(f"Status: End point set at {np.array2string(self.end_point, precision=0)}")
-                
-                self.path_info.setText(f"Path: {path_data['name']} loaded with {len(path_data['data'])} points")
-                
-                # Store current path ID
-                self.current_path_id = path_id
-                
-                # Enable buttons
-                self.find_path_btn.setEnabled(self.start_point is not None and self.end_point is not None)
-                self.retrace_path_btn.setEnabled(self.start_point is not None and self.end_point is not None)
-                self.trace_another_btn.setEnabled(True)
-                
-                # If we have a path and the model is loaded, enable segmentation
-                if hasattr(self, 'segmenter') and self.segmenter is not None:
-                    self.run_segmentation_btn.setEnabled(True)
-                    
-                # Switch to the Point Selection tab
-                self.tabs.setCurrentIndex(0)
-                
-                # Ensure the selected path's layer is visible
-                path_data['layer'].visible = True
-                
-                # Clear any error messages
-                self.error_status.setText("")
-                
-                show_info(f"Loaded {path_data['name']}")
-        except Exception as e:
-            error_msg = f"Error viewing path: {str(e)}"
-            show_info(error_msg)
-            self.error_status.setText(error_msg)
-        finally:
-            self.handling_event = False
+    def find_farthest_points(self, points):
+        """
+        Find the two points with the maximum distance between them.
+        
+        Parameters:
+        points (list): List of points.
+        
+        Returns:
+        tuple: Start point, end point, and remaining waypoints.
+        """
+        points = [np.array(p) for p in points]
+        max_distance = 0
+        start_point = None
+        end_point = None
+        
+        # Find the two points that are farthest apart
+        for i in range(len(points)):
+            for j in range(i+1, len(points)):
+                dist = self.find_distance(points[i], points[j])
+                if dist > max_distance:
+                    max_distance = dist
+                    start_point = points[i].copy()
+                    end_point = points[j].copy()
+        
+        # Remove the start and end points from the list to get the waypoints
+        if start_point is not None and end_point is not None:
+            waypoints = [p for p in points if not np.array_equal(p, start_point) and not np.array_equal(p, end_point)]
+            return start_point, end_point, waypoints
+        
+        return None, None, []
     
     def trace_another_path(self):
-        """Reset everything to start a new path"""
-        self.reset_for_new_path()
+        """Reset for tracing a new path while preserving existing paths"""
+        # Clear current waypoints to start fresh
+        self.waypoints = []
+        self.waypoints_layer.data = np.empty((0, self.image.ndim))
         
-        # Activate the start point layer for the new path
-        self.viewer.layers.selection.active = self.start_points_layer
-        show_info("Ready to trace a new path. Click on the image to set start point.")
+        # Reset UI for new path
+        self.waypoints_status.setText("Status: No waypoints set")
+        self.path_info.setText("Path: Not calculated")
+        self.find_path_btn.setEnabled(False)
+        self.trace_another_btn.setEnabled(False)
+        
+        # Activate the waypoints layer for the new path
+        self.viewer.layers.selection.active = self.waypoints_layer
+        show_info("Ready to trace a new path. Click on the image to set waypoints.")
     
-    def reset_for_new_path(self):
-        """Reset everything for a new path"""
-        # Clear points
-        self.start_point = None
-        self.end_point = None
-        self.start_points_layer.data = np.empty((0, self.image.ndim))
-        self.end_points_layer.data = np.empty((0, self.image.ndim))
+    def clear_points(self):
+        """Clear all waypoints and path without saving"""
+        self.waypoints = []
+        self.waypoints_layer.data = np.empty((0, self.image.ndim))
         
         # Clear traced path layer if it exists
         if hasattr(self, 'traced_path_layer'):
@@ -560,91 +423,56 @@ class BrightestPathWidget(QWidget):
             self.traced_path_layer.visible = False
             
         # Reset UI
-        self.start_status.setText("Status: No start point set")
-        self.end_status.setText("Status: No end point set")
+        self.waypoints_status.setText("Status: No waypoints set")
         self.path_info.setText("Path: Not calculated")
         
         # Reset buttons
         self.find_path_btn.setEnabled(False)
-        self.retrace_path_btn.setEnabled(False)
         self.trace_another_btn.setEnabled(False)
         self.run_segmentation_btn.setEnabled(False)
-    
-    def clear_points(self):
-        """Clear all points and path without saving"""
-        self.reset_for_new_path()
+        
         show_info("All points and path cleared. Ready to start over.")
-    
+
     def find_path(self):
-        """Find the brightest path between the selected points"""
+        """Find the brightest path through the waypoints"""
         if self.handling_event:
             return
             
         try:
             self.handling_event = True
             
-            if self.start_point is None or self.end_point is None:
-                show_info("Please set both start and end points")
-                self.error_status.setText("Error: Please set both start and end points")
+            if len(self.waypoints) < 2:
+                show_info("Please set at least 2 waypoints")
+                self.error_status.setText("Error: Please set at least 2 waypoints")
                 return
             
             # Clear any previous error messages
             self.error_status.setText("")
-            show_info("Finding brightest path...")
+            show_info("Finding brightest path through waypoints...")
             self.path_info.setText("Path: Calculating...")
             
-            # Determine if we're doing 2D or 3D search based on whether points are on same frame
-            is_same_frame = True
-            if self.image.ndim > 2:  # Only relevant for 3D+ images
-                is_same_frame = self.start_point[0] == self.end_point[0]
+            # Find the two farthest points to use as start and end
+            waypoints_copy = [point.copy() for point in self.waypoints]
+            start_point, end_point, intermediate_waypoints = self.find_farthest_points(waypoints_copy)
             
-            # Prepare points format based on 2D or 3D
-            if is_same_frame and self.image.ndim > 2:
-                # 2D case: use [y, x] format (ignore z)
-                search_start = self.start_point[1:3]  # [y, x]
-                search_end = self.end_point[1:3]      # [y, x]
-                search_image = self.image[int(self.start_point[0])]  # Use the frame of the start point
-                show_info(f"Using 2D path search on frame {int(self.start_point[0])}")
-                
-                # Hide 3D traced path layer if it exists
-                if hasattr(self, 'traced_path_layer'):
-                    self.traced_path_layer.visible = False
-            else:
-                # 3D case or already 2D image: use full coordinates
-                search_start = self.start_point
-                search_end = self.end_point
-                search_image = self.image
-                show_info("Using 3D path search across frames")
-                
-                # Show 3D traced path layer if it exists
-                if hasattr(self, 'traced_path_layer'):
-                    self.traced_path_layer.visible = True
-            
-            # Set up the search algorithm
-            search_algorithm = BidirectionalAStarSearch(
-                search_image, 
-                start_point=search_start, 
-                goal_point=search_end
+            if start_point is None or end_point is None:
+                show_info("Failed to determine start and end points")
+                self.error_status.setText("Error: Failed to determine start and end points")
+                return
+
+            search_algorithm = WaypointBidirectionalAStarSearch(
+                self.image, 
+                start_point=start_point, 
+                goal_point=end_point,
+                waypoints=intermediate_waypoints
             )
+            show_info(f"Using waypoint search with {len(intermediate_waypoints)} intermediate points")
             
             # Find the path
             brightest_path = search_algorithm.search()
             
             # Process the found path
             if brightest_path is not None and len(brightest_path) > 0:
-                # If 2D search was done, need to add z-coordinate back
-                if is_same_frame and self.image.ndim > 2:
-                    z_val = self.start_point[0]
-                    # Add z coordinate to each point
-                    brightest_path_3d = []
-                    for point in brightest_path:
-                        if len(point) == 2:  # [y, x]
-                            brightest_path_3d.append([z_val, point[0], point[1]])
-                        else:
-                            brightest_path_3d.append(point)  # Already has z
-                    
-                    brightest_path = brightest_path_3d
-                
                 # Generate path name
                 path_name = f"Path {self.next_path_number}"
                 self.next_path_number += 1
@@ -663,7 +491,7 @@ class BrightestPathWidget(QWidget):
                 )
                 
                 # For 3D visualization, create a traced path that shows the whole path in every frame
-                if not is_same_frame and self.image.ndim > 2 and hasattr(self, 'traced_path_layer'):
+                if self.image.ndim > 2 and hasattr(self, 'traced_path_layer'):
                     # Get the z-range (frame range) that we need to span
                     z_values = [point[0] for point in brightest_path]
                     min_z = int(min(z_values))
@@ -695,8 +523,9 @@ class BrightestPathWidget(QWidget):
                 self.paths[path_id] = {
                     'name': path_name,
                     'data': path_data,
-                    'start': self.start_point.copy() if self.start_point is not None else None,
-                    'end': self.end_point.copy() if self.end_point is not None else None,
+                    'start': start_point.copy(),
+                    'end': end_point.copy(),
+                    'waypoints': [wp.copy() for wp in intermediate_waypoints] if intermediate_waypoints else [],
                     'visible': True,
                     'layer': path_layer
                 }
@@ -736,7 +565,6 @@ class BrightestPathWidget(QWidget):
                 show_info(msg)
                 self.path_info.setText(f"Path: {msg}")
                 self.error_status.setText("Error: No path found between selected points")
-                self.trace_another_btn.setEnabled(False)
         except Exception as e:
             msg = f"Error finding path: {e}"
             show_info(msg)
@@ -745,33 +573,6 @@ class BrightestPathWidget(QWidget):
         finally:
             self.handling_event = False
 
-        
-    
-    def retrace_path(self):
-        """Retrace the path using the same start and end points"""
-        # First remove the previous path if it exists
-        if hasattr(self, 'current_path_id') and self.current_path_id in self.paths:
-            # Get the layer
-            path_layer = self.path_layers[self.current_path_id]
-            
-            # Remove from napari
-            self.viewer.layers.remove(path_layer)
-            
-            # Remove from data structures
-            del self.path_layers[self.current_path_id]
-            del self.paths[self.current_path_id]
-            
-            # Remove from list
-            for i in range(self.path_list.count()):
-                item = self.path_list.item(i)
-                if item.data(100) == self.current_path_id:
-                    self.path_list.takeItem(i)
-                    break
-        
-        # Now find a new path
-        self.find_path()
-        show_info("Path retraced with same start and end points")
-    
     def get_next_color(self):
         """Get the next color from the predefined list"""
         # List of named colors that work well for paths
@@ -784,6 +585,93 @@ class BrightestPathWidget(QWidget):
         
         return color
     
+    def on_path_selection_changed(self):
+        """Handle when path selection changes in the list"""
+        # Prevent processing during updates
+        if self.handling_event:
+            return
+            
+        try:
+            self.handling_event = True
+            
+            selected_items = self.path_list.selectedItems()
+            num_selected = len(selected_items)
+            
+            # Enable/disable buttons based on selection
+            self.delete_path_btn.setEnabled(num_selected > 0)
+            self.view_path_btn.setEnabled(num_selected == 1)
+            self.connect_paths_btn.setEnabled(num_selected == 2)
+        except Exception as e:
+            show_info(f"Error handling selection change: {str(e)}")
+        finally:
+            self.handling_event = False
+    
+    def view_selected_path(self):
+        """View the selected path from the list"""
+        if self.handling_event:
+            return
+            
+        try:
+            self.handling_event = True
+            
+            selected_items = self.path_list.selectedItems()
+            if len(selected_items) != 1:
+                return
+                
+            item = selected_items[0]
+            path_id = item.data(100)
+            if path_id in self.paths:
+                path_data = self.paths[path_id]
+                
+                # Update waypoints with start, end, and intermediate waypoints
+                new_waypoints = []
+                if 'start' in path_data and path_data['start'] is not None:
+                    new_waypoints.append(path_data['start'])
+                    
+                if 'waypoints' in path_data and path_data['waypoints']:
+                    new_waypoints.extend(path_data['waypoints'])
+                    
+                if 'end' in path_data and path_data['end'] is not None:
+                    new_waypoints.append(path_data['end'])
+                
+                # Update the waypoints layer
+                if new_waypoints:
+                    self.waypoints_layer.data = np.array(new_waypoints)
+                    self.waypoints = new_waypoints
+                    self.waypoints_status.setText(f"Status: {len(new_waypoints)} waypoints loaded")
+                
+                self.path_info.setText(f"Path: {path_data['name']} loaded with {len(path_data['data'])} points")
+                
+                # Store current path ID
+                self.current_path_id = path_id
+                
+                # Enable find path button
+                self.find_path_btn.setEnabled(len(new_waypoints) >= 2)
+                
+                # Enable trace another path button
+                self.trace_another_btn.setEnabled(True)
+                
+                # If we have a path and the model is loaded, enable segmentation
+                if hasattr(self, 'segmenter') and self.segmenter is not None:
+                    self.run_segmentation_btn.setEnabled(True)
+                    
+                # Switch to the Point Selection tab
+                self.tabs.setCurrentIndex(0)
+                
+                # Ensure the selected path's layer is visible
+                path_data['layer'].visible = True
+                
+                # Clear any error messages
+                self.error_status.setText("")
+                
+                show_info(f"Loaded {path_data['name']}")
+        except Exception as e:
+            error_msg = f"Error viewing path: {str(e)}"
+            show_info(error_msg)
+            self.error_status.setText(error_msg)
+        finally:
+            self.handling_event = False
+    
     def delete_selected_paths(self):
         """Delete the currently selected paths"""
         selected_items = self.path_list.selectedItems()
@@ -791,17 +679,30 @@ class BrightestPathWidget(QWidget):
             show_info("No paths selected")
             return
         
+        paths_deleted = False
+        
         for item in selected_items:
             # Get the path ID
             path_id = item.data(100)
             
             if path_id in self.paths:
+                paths_deleted = True
                 path_name = self.paths[path_id]['name']
                 
-                # Remove the layer from viewer
+                # Remove the path layer from viewer
                 if path_id in self.path_layers:
                     self.viewer.layers.remove(self.path_layers[path_id])
                     del self.path_layers[path_id]
+                
+                # Remove corresponding segmentation layer if it exists
+                seg_layer_name = f"Segmentation - {path_name}"
+                for layer in list(self.viewer.layers):  # Create a copy of the list to safely modify during iteration
+                    if layer.name == seg_layer_name:
+                        self.viewer.layers.remove(layer)
+                        if hasattr(self, 'segmentation_layer') and self.segmentation_layer.name == seg_layer_name:
+                            self.segmentation_layer = None
+                        show_info(f"Removed segmentation layer for {path_name}")
+                        break
                 
                 # Remove from dictionary
                 del self.paths[path_id]
@@ -810,7 +711,18 @@ class BrightestPathWidget(QWidget):
                 row = self.path_list.row(item)
                 self.path_list.takeItem(row)
                 
+                # Also remove from segmentation path list
+                for i in range(self.seg_path_list.count()):
+                    seg_item = self.seg_path_list.item(i)
+                    if seg_item.data(100) == path_id:
+                        self.seg_path_list.takeItem(i)
+                        break
+                
                 show_info(f"Deleted {path_name}")
+        
+        # Update traced path visualization if any paths were deleted
+        if paths_deleted and self.image.ndim > 2 and hasattr(self, 'traced_path_layer'):
+            self._update_traced_path_visualization()
         
         # Disable buttons if no paths remain
         if self.path_list.count() == 0:
@@ -819,6 +731,54 @@ class BrightestPathWidget(QWidget):
             self.connect_paths_btn.setEnabled(False)
             self.export_all_btn.setEnabled(False)
             self.run_segmentation_btn.setEnabled(False)
+    
+    def _update_traced_path_visualization(self):
+        """Update the traced path visualization to reflect current paths"""
+        if not hasattr(self, 'traced_path_layer') or self.traced_path_layer is None:
+            return
+            
+        if not self.paths:
+            # If no paths remain, clear the traced path layer
+            self.traced_path_layer.data = np.empty((0, self.image.ndim))
+            self.traced_path_layer.visible = False
+            return
+            
+        # Create a comprehensive visualization of all paths in the traced layer
+        all_traced_points = []
+        
+        # First, determine the full z-range for all paths
+        min_z = float('inf')
+        max_z = float('-inf')
+        
+        for path_id, path_data in self.paths.items():
+            if len(path_data['data']) > 0 and path_data['visible']:
+                z_values = [point[0] for point in path_data['data']]
+                path_min_z = int(min(z_values))
+                path_max_z = int(max(z_values))
+                
+                min_z = min(min_z, path_min_z)
+                max_z = max(max_z, path_max_z)
+        
+        # If we have valid z-range
+        if min_z != float('inf') and max_z != float('-inf'):
+            # For each frame in the full range
+            for z in range(min_z, max_z + 1):
+                # Add all paths to this frame
+                for path_id, path_data in self.paths.items():
+                    if path_data['visible']:
+                        for point in path_data['data']:
+                            # Create a new point with the current frame's z-coordinate
+                            new_point = point.copy()
+                            new_point[0] = z  # Set the z-coordinate to the current frame
+                            all_traced_points.append(new_point)
+            
+            # Update the traced path layer
+            if all_traced_points:
+                self.traced_path_layer.data = np.array(all_traced_points)
+                self.traced_path_layer.visible = True
+            else:
+                self.traced_path_layer.data = np.empty((0, self.image.ndim))
+                self.traced_path_layer.visible = False
     
     def set_paths_visibility(self, visible):
         """Set visibility of all saved path layers and update traced path visualization"""
@@ -836,42 +796,7 @@ class BrightestPathWidget(QWidget):
             # Update traced path visualization
             if self.image.ndim > 2 and hasattr(self, 'traced_path_layer'):
                 if visible:
-                    # Create a comprehensive visualization of all paths in the traced layer
-                    all_traced_points = []
-                    
-                    # First, determine the full z-range for all paths
-                    min_z = float('inf')
-                    max_z = float('-inf')
-                    
-                    for path_id, path_data in self.paths.items():
-                        if len(path_data['data']) > 0:
-                            z_values = [point[0] for point in path_data['data']]
-                            path_min_z = int(min(z_values))
-                            path_max_z = int(max(z_values))
-                            
-                            min_z = min(min_z, path_min_z)
-                            max_z = max(max_z, path_max_z)
-                    
-                    # If we have valid z-range
-                    if min_z != float('inf') and max_z != float('-inf'):
-                        # For each frame in the full range
-                        for z in range(min_z, max_z + 1):
-                            # Add all paths to this frame
-                            for path_id, path_data in self.paths.items():
-                                if path_data['visible']:
-                                    for point in path_data['data']:
-                                        # Create a new point with the current frame's z-coordinate
-                                        new_point = point.copy()
-                                        new_point[0] = z  # Set the z-coordinate to the current frame
-                                        all_traced_points.append(new_point)
-                        
-                        # Update the traced path layer
-                        if all_traced_points:
-                            self.traced_path_layer.data = np.array(all_traced_points)
-                            self.traced_path_layer.visible = True
-                            
-                            # Navigate to the first frame
-                            self.viewer.dims.set_point(0, min_z)
+                    self._update_traced_path_visualization()
                 else:
                     # Hide traced path layer when hiding all paths
                     self.traced_path_layer.data = np.empty((0, self.image.ndim))
@@ -1019,12 +944,20 @@ class BrightestPathWidget(QWidget):
                 # Generate a unique ID for this path
                 path_id = str(uuid.uuid4())
                 
+                # Combine waypoints from both paths
+                combined_waypoints = []
+                if 'waypoints' in path1 and path1['waypoints']:
+                    combined_waypoints.extend(path1['waypoints'])
+                if 'waypoints' in path2 and path2['waypoints']:
+                    combined_waypoints.extend(path2['waypoints'])
+                
                 # Store the combined path
                 self.paths[path_id] = {
                     'name': combined_name,
                     'data': combined_path,
                     'start': path1['start'].copy(),
                     'end': path2['end'].copy(),
+                    'waypoints': combined_waypoints,
                     'visible': True,
                     'layer': combined_layer
                 }
@@ -1037,6 +970,11 @@ class BrightestPathWidget(QWidget):
                 item.setData(100, path_id)
                 self.path_list.addItem(item)
                 
+                # Add to segmentation path list
+                seg_item = QListWidgetItem(combined_name)
+                seg_item.setData(100, path_id)
+                self.seg_path_list.addItem(seg_item)
+                
                 # Select the new path
                 self.path_list.setCurrentItem(item)
                 
@@ -1044,21 +982,28 @@ class BrightestPathWidget(QWidget):
                 msg = f"Connected {path1['name']} to {path2['name']} successfully"
                 show_info(msg)
                 
-                # Set up for modifying this path
-                self.start_point = path1['start'].copy()
-                self.end_point = path2['end'].copy()
-                self.start_points_layer.data = np.array([self.start_point])
-                self.end_points_layer.data = np.array([self.end_point])
+                # Update waypoints
+                new_waypoints = []
+                if path1['start'] is not None:
+                    new_waypoints.append(path1['start'].copy())
+                if 'waypoints' in path1 and path1['waypoints']:
+                    new_waypoints.extend(path1['waypoints'])
+                if 'waypoints' in path2 and path2['waypoints']:
+                    new_waypoints.extend(path2['waypoints'])
+                if path2['end'] is not None:
+                    new_waypoints.append(path2['end'].copy())
                 
-                # Update status
-                self.start_status.setText(f"Status: Start point set at {np.array2string(self.start_point, precision=0)}")
-                self.end_status.setText(f"Status: End point set at {np.array2string(self.end_point, precision=0)}")
+                self.waypoints = new_waypoints
+                self.waypoints_layer.data = np.array(new_waypoints)
+                
+                # Update waypoints status
+                self.waypoints_status.setText(f"Status: {len(new_waypoints)} waypoints set")
                 self.path_info.setText(f"Path: {combined_name} with {len(combined_path)} points")
                 
                 # Store current path ID
                 self.current_path_id = path_id
                 
-                # Enable buttons
+                # Enable trace another path button
                 self.trace_another_btn.setEnabled(True)
                 
                 # If we have a path and the model is loaded, enable segmentation
@@ -1097,11 +1042,17 @@ class BrightestPathWidget(QWidget):
             # Prepare data for export
             path_data = {}
             for path_id, path_info in self.paths.items():
-                path_data[path_info['name']] = {
+                export_data = {
                     'points': path_info['data'],
                     'start': path_info['start'] if 'start' in path_info and path_info['start'] is not None else np.array([]),
-                    'end': path_info['end'] if 'end' in path_info and path_info['end'] is not None else np.array([])
+                    'end': path_info['end'] if 'end' in path_info and path_info['end'] is not None else np.array([]),
                 }
+                
+                # Include waypoints if available
+                if 'waypoints' in path_info and path_info['waypoints']:
+                    export_data['waypoints'] = np.array(path_info['waypoints'])
+                
+                path_data[path_info['name']] = export_data
             
             # Save as NumPy archive
             np.savez(filepath, paths=path_data)
@@ -1145,7 +1096,6 @@ class BrightestPathWidget(QWidget):
             show_info(error_msg)
             print(f"Error details: {str(e)}")
 
-    # Add this new method to handle path selection in the segmentation tab
     def on_seg_path_selection_changed(self):
         """Handle when path selection changes in the segmentation tab"""
         # Prevent processing during updates
@@ -1177,178 +1127,8 @@ class BrightestPathWidget(QWidget):
         finally:
             self.handling_event = False
 
-    # Add this test method to your BrightestPathWidget class
-
-    def test_segmentation_display(self):
-        """Test method to verify segmentation display works"""
-        # Create a simple test mask
-        depth, height, width = self.image.shape
-        test_mask = np.zeros((depth, height, width), dtype=np.uint8)
-        
-        # Fill a region in the middle with 1s
-        center_z = depth // 2
-        z_range = max(1, depth // 10)
-        
-        # Create visible rectangles
-        for z in range(center_z - z_range, center_z + z_range):
-            if 0 <= z < depth:
-                # Create a rectangle
-                h_start, h_end = height // 4, height * 3 // 4
-                w_start, w_end = width // 4, width * 3 // 4
-                test_mask[z, h_start:h_end, w_start:w_end] = 1
-        
-        # Display the test mask
-        test_layer_name = "Test Segmentation"
-        
-        # Remove existing test layer if it exists
-        for layer in self.viewer.layers:
-            if layer.name == test_layer_name:
-                self.viewer.layers.remove(layer)
-        
-        # Add as image layer
-        test_layer = self.viewer.add_image(
-            test_mask,
-            name=test_layer_name,
-            opacity=0.7,
-            colormap='red',
-            blending='additive'
-        )
-        
-        # Ensure it's visible and on top
-        test_layer.visible = True
-        
-        # Navigate to center frame
-        self.viewer.dims.set_point(0, center_z)
-        
-        # Reset view
-        self.viewer.reset_view()
-        
-        show_info(f"Test segmentation displayed. Check for red rectangle at frame {center_z}")
-
     def run_segmentation(self):
         """Run segmentation on the selected path"""
-        if self.segmenter is None:
-            show_info("Please load the segmentation model first")
-            return
-        
-        if len(self.paths) == 0:
-            show_info("Please create a path first")
-            return
-        
-        # Get the selected path
-        path_id = None
-        if hasattr(self, 'selected_seg_path_id'):
-            path_id = self.selected_seg_path_id
-        else:
-            # Fallback to the path selected in the list
-            selected_items = self.seg_path_list.selectedItems()
-            if len(selected_items) == 1:
-                path_id = selected_items[0].data(100)
-        
-        if path_id is None or path_id not in self.paths:
-            show_info("Please select a path for segmentation")
-            self.segmentation_status.setText("Status: No path selected for segmentation")
-            return
-        
-        # Get the path data
-        path_data = self.paths[path_id]['data']
-        path_name = self.paths[path_id]['name']
-        
-        # Update UI
-        self.segmentation_status.setText(f"Status: Running segmentation on {path_name}...")
-        self.segmentation_progress.setValue(0)
-        self.run_segmentation_btn.setEnabled(False)
-        
-        # Get segmentation parameters
-        patch_size = self.patch_size_spin.value()
-        use_full_volume = self.use_full_volume_cb.isChecked()
-        
-        # Determine volume range
-        if use_full_volume:
-            start_frame = 0
-            end_frame = len(self.image) - 1
-        else:
-            # Use the range from the path
-            z_values = [point[0] for point in path_data]
-            start_frame = int(min(z_values))
-            end_frame = int(max(z_values))
-        
-        # Progress callback function
-        def update_progress(current, total):
-            progress = int((current / total) * 100)
-            self.segmentation_progress.setValue(progress)
-        
-        try:
-            # Run segmentation
-            result_masks = self.segmenter.process_volume(
-                image=self.image,
-                brightest_path=path_data,
-                start_frame=start_frame,
-                end_frame=end_frame,
-                patch_size=patch_size,
-                progress_callback=update_progress
-            )
-            
-            # If segmentation fails or returns empty masks, create a simple visible test pattern
-            if result_masks is None or (isinstance(result_masks, np.ndarray) and result_masks.max() == 0):
-                print("Creating a visible test pattern since segmentation produced empty results")
-                # Create a simple visible test pattern (rectangle in the middle of frames)
-                depth, height, width = self.image.shape
-                result_masks = np.zeros((depth, height, width), dtype=np.uint8)
-                
-                center_z = (start_frame + end_frame) // 2
-                z_range = max(1, (end_frame - start_frame) // 4)
-                
-                # Create visible rectangles in frames around where the path is
-                for z in range(center_z - z_range, center_z + z_range + 1):
-                    if start_frame <= z <= end_frame:
-                        # Create a rectangle in the middle of the frame
-                        h_start, h_end = height // 4, height * 3 // 4
-                        w_start, w_end = width // 4, width * 3 // 4
-                        result_masks[z, h_start:h_end, w_start:w_end] = 1
-            
-            # Create or update the segmentation layer
-            seg_layer_name = f"Segmentation - {path_name}"
-            
-            # Remove existing layer if it exists
-            for layer in self.viewer.layers:
-                if layer.name == seg_layer_name:
-                    self.viewer.layers.remove(layer)
-            
-            # ADD AS IMAGE LAYER - more reliable than labels for testing
-            self.segmentation_layer = self.viewer.add_image(
-                result_masks,
-                name=seg_layer_name,
-                opacity=0.7,
-                colormap='red',
-                blending='additive'  # Makes it easier to see
-            )
-            
-            # Ensure layer is visible and on top
-            self.segmentation_layer.visible = True
-            
-            # Move layer to top for better visibility
-            while self.viewer.layers.index(self.segmentation_layer) < len(self.viewer.layers) - 1:
-                self.viewer.layers.move(self.viewer.layers.index(self.segmentation_layer), +1)
-            
-            # Go to a frame where we know there's content
-            center_frame = (start_frame + end_frame) // 2
-            self.viewer.dims.set_point(0, center_frame)
-            
-            # Reset view to ensure everything is visible
-            self.viewer.reset_view()
-            
-            self.segmentation_status.setText(f"Status: Segmentation complete for {path_name}")
-            show_info(f"Segmentation complete for {path_name}")
-            
-        except Exception as e:
-            self.segmentation_status.setText(f"Status: Error - {str(e)}")
-            show_info(f"Error during segmentation: {str(e)}")
-        
-        finally:
-            self.segmentation_progress.setValue(100)
-            self.run_segmentation_btn.setEnabled(True)
-        """Run segmentation on the selected path with improved error handling"""
         if self.segmenter is None:
             show_info("Please load the segmentation model first")
             return
