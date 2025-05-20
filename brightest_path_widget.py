@@ -81,10 +81,13 @@ class BrightestPathWidget(QWidget):
         """Create the UI panel with controls"""
         try:
             layout = QVBoxLayout()
+            layout.setSpacing(2)
+            layout.setContentsMargins(3, 3, 3, 3)
+            self.setMinimumWidth(300)
             self.setLayout(layout)
             
             # Title
-            title = QLabel("<b>Brightest Path Finder</b>")
+            title = QLabel("<b>Neuro-SAM</b>")
             layout.addWidget(title)
             
             # Create tabs for different functionality
@@ -93,17 +96,23 @@ class BrightestPathWidget(QWidget):
             # First tab: Point Selection
             point_selection_tab = QWidget()
             point_layout = QVBoxLayout()
+            point_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            point_layout.setContentsMargins(2, 2, 2, 2)
             point_selection_tab.setLayout(point_layout)
+            
             
             # Waypoints section
             waypoints_section = QWidget()
             waypoints_layout = QVBoxLayout()
+            waypoints_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            waypoints_layout.setContentsMargins(2, 2, 2, 2)
             waypoints_section.setLayout(waypoints_layout)
             
-            waypoints_instr = QLabel("Click on the image to set waypoints. A brightest path will be automatically computed through these points.")
+            waypoints_instr = QLabel("1. Click on the image for points\n2. Now click on Find Path to find the prompt points\n3. Head to the Segmentation tab to run segmentation")
             waypoints_layout.addWidget(waypoints_instr)
             
             self.select_waypoints_btn = QPushButton("Select Waypoints Layer")
+            self.select_waypoints_btn.setFixedHeight(22)
             self.select_waypoints_btn.clicked.connect(self.activate_waypoints_layer)
             waypoints_layout.addWidget(self.select_waypoints_btn)
             
@@ -113,8 +122,11 @@ class BrightestPathWidget(QWidget):
             
             # Find path button
             find_btns_layout = QHBoxLayout()
+            find_btns_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            find_btns_layout.setContentsMargins(2, 2, 2, 2)
             
-            self.find_path_btn = QPushButton("Find Path Through Waypoints")
+            self.find_path_btn = QPushButton("Find Path")
+            self.find_path_btn.setFixedHeight(22)
             self.find_path_btn.clicked.connect(self.find_path)
             self.find_path_btn.setEnabled(False)
             find_btns_layout.addWidget(self.find_path_btn)
@@ -123,12 +135,14 @@ class BrightestPathWidget(QWidget):
             
             # Trace Another Path button
             self.trace_another_btn = QPushButton("Trace Another Path")
+            self.trace_another_btn.setFixedHeight(22)
             self.trace_another_btn.clicked.connect(self.trace_another_path)
             self.trace_another_btn.setEnabled(False)  # Disabled until we have a path
             point_layout.addWidget(self.trace_another_btn)
             
             # Clear points button
             self.clear_points_btn = QPushButton("Clear Points (Start Over)")
+            self.clear_points_btn.setFixedHeight(22)
             self.clear_points_btn.clicked.connect(self.clear_points)
             point_layout.addWidget(self.clear_points_btn)
             
@@ -140,24 +154,31 @@ class BrightestPathWidget(QWidget):
             # Second tab: Path Management
             path_management_tab = QWidget()
             path_layout = QVBoxLayout()
+            path_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            path_layout.setContentsMargins(2, 2, 2, 2)
             path_management_tab.setLayout(path_layout)
             
             # Path list with instructions
             path_layout.addWidget(QLabel("Saved Paths (select two paths to connect them):"))
             self.path_list = QListWidget()
+            self.path_list.setFixedHeight(80)
             self.path_list.setSelectionMode(QListWidget.ExtendedSelection)  # Allow multiple selection
             self.path_list.itemSelectionChanged.connect(self.on_path_selection_changed)
             path_layout.addWidget(self.path_list)
             
             # Path management buttons
             path_buttons_layout = QHBoxLayout()
+            path_buttons_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            path_buttons_layout.setContentsMargins(2, 2, 2, 2)
             
             self.view_path_btn = QPushButton("View Selected Path")
+            self.view_path_btn.setFixedHeight(22)
             self.view_path_btn.clicked.connect(self.view_selected_path)
             self.view_path_btn.setEnabled(False)
             path_buttons_layout.addWidget(self.view_path_btn)
             
             self.delete_path_btn = QPushButton("Delete Selected Path(s)")
+            self.delete_path_btn.setFixedHeight(22)
             self.delete_path_btn.clicked.connect(self.delete_selected_paths)
             self.delete_path_btn.setEnabled(False)
             path_buttons_layout.addWidget(self.delete_path_btn)
@@ -166,6 +187,7 @@ class BrightestPathWidget(QWidget):
             
             # Path connection button
             self.connect_paths_btn = QPushButton("Connect Selected Paths")
+            self.connect_paths_btn.setFixedHeight(22)
             self.connect_paths_btn.setToolTip("Select exactly 2 paths to connect them")
             self.connect_paths_btn.clicked.connect(self.connect_selected_paths)
             self.connect_paths_btn.setEnabled(False)
@@ -173,12 +195,16 @@ class BrightestPathWidget(QWidget):
             
             # Path visibility options
             visibility_layout = QHBoxLayout()
+            visibility_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            visibility_layout.setContentsMargins(2, 2, 2, 2)
             
             self.show_all_btn = QPushButton("Show All Paths")
+            self.show_all_btn.setFixedHeight(22)
             self.show_all_btn.clicked.connect(lambda: self.set_paths_visibility(True))
             visibility_layout.addWidget(self.show_all_btn)
             
             self.hide_all_btn = QPushButton("Hide All Paths")
+            self.hide_all_btn.setFixedHeight(22)
             self.hide_all_btn.clicked.connect(lambda: self.set_paths_visibility(False))
             visibility_layout.addWidget(self.hide_all_btn)
             
@@ -186,6 +212,7 @@ class BrightestPathWidget(QWidget):
             
             # Export button
             self.export_all_btn = QPushButton("Export All Paths")
+            self.export_all_btn.setFixedHeight(22)
             self.export_all_btn.clicked.connect(self.export_all_paths)
             self.export_all_btn.setEnabled(False)
             path_layout.addWidget(self.export_all_btn)
@@ -193,15 +220,19 @@ class BrightestPathWidget(QWidget):
             # Third tab: Segmentation
             segmentation_tab = QWidget()
             seg_layout = QVBoxLayout()
+            seg_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            seg_layout.setContentsMargins(2, 2, 2, 2)
             segmentation_tab.setLayout(seg_layout)
             
             # Model settings
             seg_layout.addWidget(QLabel("<b>Dendrite Segmentation</b>"))
-            seg_layout.addWidget(QLabel("Segment dendrites using the traced path"))
+            seg_layout.addWidget(QLabel("1. Load Segmentation Model\n2. Choose the path you want to segment\n3. Click on Run Segmentation to Segment"))
             
             # Model paths
             model_section = QWidget()
             model_layout = QVBoxLayout()
+            model_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            model_layout.setContentsMargins(2, 2, 2, 2)
             model_section.setLayout(model_layout)
             
             model_layout.addWidget(QLabel("Model Paths:"))
@@ -225,18 +256,23 @@ class BrightestPathWidget(QWidget):
             # Path selection for segmentation
             seg_layout.addWidget(QLabel("Select a path to segment:"))
             self.seg_path_list = QListWidget()
+            self.seg_path_list.setFixedHeight(80)
             self.seg_path_list.itemSelectionChanged.connect(self.on_seg_path_selection_changed)
             seg_layout.addWidget(self.seg_path_list)
             
             # Segmentation parameters
             params_section = QWidget()
             params_layout = QVBoxLayout()
+            params_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            params_layout.setContentsMargins(2, 2, 2, 2)
             params_section.setLayout(params_layout)
             
             params_layout.addWidget(QLabel("Segmentation Parameters:"))
             
             # Patch size
             patch_size_layout = QHBoxLayout()
+            patch_size_layout.setSpacing(2)  # Replace some_layout with the actual variable name
+            patch_size_layout.setContentsMargins(2, 2, 2, 2)
             patch_size_layout.addWidget(QLabel("Patch Size:"))
             self.patch_size_spin = QSpinBox()
             self.patch_size_spin.setRange(32, 512)
@@ -260,10 +296,12 @@ class BrightestPathWidget(QWidget):
             
             # Load model and run segmentation buttons
             self.load_model_btn = QPushButton("Load Segmentation Model")
+            self.load_model_btn.setFixedHeight(22)
             self.load_model_btn.clicked.connect(self.load_segmentation_model)
             seg_layout.addWidget(self.load_model_btn)
             
             self.run_segmentation_btn = QPushButton("Run Segmentation")
+            self.run_segmentation_btn.setFixedHeight(22)
             self.run_segmentation_btn.clicked.connect(self.run_segmentation)
             self.run_segmentation_btn.setEnabled(False)  # Disabled until model is loaded
             seg_layout.addWidget(self.run_segmentation_btn)
@@ -282,6 +320,8 @@ class BrightestPathWidget(QWidget):
             self.tabs.addTab(point_selection_tab, "Point Selection")
             self.tabs.addTab(path_management_tab, "Path Management")
             self.tabs.addTab(segmentation_tab, "Segmentation")
+            self.tabs.setTabBarAutoHide(True)
+            self.tabs.setStyleSheet("QTabBar::tab { height: 22px; }")
             layout.addWidget(self.tabs)
             
             # Current path info at the bottom
