@@ -5,7 +5,7 @@ from qtpy.QtWidgets import (
 )
 
 from path_tracing_module import PathTracingWidget
-from dummy_code.segmentation_module_old import SegmentationWidget
+from segmentation_module import SegmentationWidget
 from spine_detection_module import SpineDetectionWidget
 from visualization_module import PathVisualizationWidget
 

@@ -150,6 +150,22 @@ class SpineDetectionWidget(QWidget):
         self.show_visualization_cb.setToolTip("Show visualization of spine detection process")
         params_layout.addWidget(self.show_visualization_cb)
         
+        # NEW: Spine projection options
+        self.project_spines_cb = QCheckBox("Project Spines Across Frames")
+        self.project_spines_cb.setChecked(True)
+        self.project_spines_cb.setToolTip("Show spines in all frames where they might be visible")
+        params_layout.addWidget(self.project_spines_cb)
+        
+        # NEW: Spine projection range
+        projection_range_layout = QHBoxLayout()
+        projection_range_layout.addWidget(QLabel("Projection Range (±frames):"))
+        self.projection_range_spin = QSpinBox()
+        self.projection_range_spin.setRange(1, 10)
+        self.projection_range_spin.setValue(2)
+        self.projection_range_spin.setToolTip("Number of frames before and after to project spines")
+        projection_range_layout.addWidget(self.projection_range_spin)
+        params_layout.addLayout(projection_range_layout)
+        
         # Set the layout for the parameters group
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
@@ -276,6 +292,59 @@ class SpineDetectionWidget(QWidget):
         # If path isn't in the list, update the list (may be newly segmented)
         self.update_path_list()
     
+    def project_spine_positions(self, spine_positions, projection_range):
+        """
+        Project spine positions across frames to make them visible in a range of frames.
+        
+        Args:
+            spine_positions: List or array of [z, y, x] spine positions
+            projection_range: Number of frames before and after to project
+            
+        Returns:
+            Expanded list of spine positions
+        """
+        # Check if we have any spine positions
+        if isinstance(spine_positions, list) and len(spine_positions) == 0:
+            return []
+        if isinstance(spine_positions, np.ndarray) and spine_positions.size == 0:
+            return []
+            
+        # Convert to numpy array if not already
+        if not isinstance(spine_positions, np.ndarray):
+            spine_positions = np.array(spine_positions)
+        
+        # Group spine positions by their spatial (y, x) coordinates
+        spine_groups = {}
+        for spine in spine_positions:
+            # Use (y, x) as key to group spines at the same spatial location
+            key = (spine[1], spine[2])
+            if key not in spine_groups:
+                spine_groups[key] = []
+            spine_groups[key].append(spine[0])  # Store z-coordinate
+        
+        # Create projected spine positions
+        projected_spines = []
+        
+        # For each spatial location
+        for (y, x), z_coords in spine_groups.items():
+            # Find min and max z-coordinates for this spatial location
+            min_z = min(z_coords)
+            max_z = max(z_coords)
+            
+            # Extend range by projection_range frames in both directions
+            extended_min_z = max(0, min_z - projection_range)
+            extended_max_z = min(len(self.image) - 1, max_z + projection_range)
+            
+            # Create a spine at this (y, x) location for each frame in the extended range
+            for z in range(int(extended_min_z), int(extended_max_z) + 1):
+                projected_spines.append([z, float(y), float(x)])  # Convert coordinates to float to avoid type issues
+        
+        # Return as numpy array, or empty array if no spines
+        if len(projected_spines) > 0:
+            return np.array(projected_spines)
+        else:
+            return np.empty((0, 3))
+    
     def run_spine_detection(self):
         """Run spine detection on the selected path"""
         if not hasattr(self, 'selected_path_id'):
@@ -325,7 +394,9 @@ class SpineDetectionWidget(QWidget):
                 'max_spine_distance': self.distance_spin.value(),
                 'distance_threshold': self.threshold_spin.value(),
                 'filter_dendrites': self.filter_dendrites_cb.isChecked(),
-                'show_visualization': self.show_visualization_cb.isChecked()
+                'show_visualization': self.show_visualization_cb.isChecked(),
+                'project_spines': self.project_spines_cb.isChecked(),
+                'projection_range': self.projection_range_spin.value()
             }
             
             self.detection_progress.setValue(20)
@@ -381,12 +452,24 @@ class SpineDetectionWidget(QWidget):
                         self.viewer.layers.remove(layer)
                         break
                 
-                # Convert spine positions to numpy array
+                # Convert spine positions to numpy array if not already
                 spine_positions_array = np.array(spine_positions)
+                
+                # Project spines across frames if enabled
+                displayed_spine_positions = spine_positions_array
+                if params['project_spines'] and self.image.ndim > 2:
+                    displayed_spine_positions = self.project_spine_positions(
+                        spine_positions_array, 
+                        params['projection_range']
+                    )
+                    napari.utils.notifications.show_info(
+                        f"Detected {len(spine_positions)} unique spines, "
+                        f"projected to {len(displayed_spine_positions)} points across frames"
+                    )
                 
                 # Add the new spine layer
                 spine_layer = self.viewer.add_points(
-                    spine_positions_array,
+                    displayed_spine_positions,
                     name=spine_layer_name,
                     size=8,
                     face_color='red',
@@ -397,9 +480,27 @@ class SpineDetectionWidget(QWidget):
                 # Store spine layer reference
                 self.state['spine_layers'][path_id] = spine_layer
                 
+                # Also store the original (non-projected) spine positions
+                self.state['spine_positions'] = spine_positions
+                
                 # Update UI
                 self.results_label.setText(f"Results: Detected {len(spine_positions)} spines for {path_name}")
+                if params['project_spines'] and self.image.ndim > 2:
+                    self.results_label.setText(
+                        f"Results: Detected {len(spine_positions)} spines for {path_name}, "
+                        f"projected across {params['projection_range']} frames in each direction"
+                    )
                 self.status_label.setText(f"Status: Spine detection completed for {path_name}")
+                
+                # Store spine data in state
+                if 'spine_data' not in self.state:
+                    self.state['spine_data'] = {}
+                    
+                self.state['spine_data'][path_id] = {
+                    'original_positions': spine_positions_array,
+                    'projected_positions': displayed_spine_positions if params['project_spines'] else None,
+                    'projection_range': params['projection_range'] if params['project_spines'] else 0
+                }
                 
                 # Emit signal that spines were detected
                 self.spines_detected.emit(path_id, spine_positions)
