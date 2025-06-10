@@ -331,8 +331,12 @@ class SegmentationWidget(QWidget):
                 segmentation_layer = self.viewer.add_labels(
                     binary_masks,
                     name=seg_layer_name,
-                    opacity=0.6
+                    opacity=0.6,
                 )
+
+                segmentation_layer.color = {
+                    1: (1.0, 0.0, 1.0),  # magenta
+                }
                 
                 # Store reference in state
                 self.state['segmentation_layer'] = segmentation_layer

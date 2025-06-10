@@ -7,7 +7,6 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import Signal
 
-
 class PathVisualizationWidget(QWidget):
     """Widget for managing and visualizing multiple paths"""
     
