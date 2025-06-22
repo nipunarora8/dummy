@@ -7,12 +7,13 @@ from qtpy.QtWidgets import (
 from path_tracing_module import PathTracingWidget
 from segmentation_module import SegmentationWidget
 from spine_detection_module import SpineDetectionWidget
+from spine_segmentation_module import SpineSegmentationWidget
 from visualization_module import PathVisualizationWidget
 
 
 class NeuroSAMWidget(QWidget):
     """Main widget for the NeuroSAM napari plugin, integrating path tracing, 
-    segmentation, and spine detection functionality.
+    segmentation, spine detection, and spine segmentation functionality.
     """
     
     def __init__(self, viewer, image):
@@ -47,6 +48,8 @@ class NeuroSAMWidget(QWidget):
             'traced_path_layer': None,  # Layer for traced path visualization
             'spine_positions': [],    # List of detected spine positions
             'spine_layers': {},       # Dictionary of spine layers
+            'spine_data': {},         # Enhanced spine detection data
+            'spine_segmentation_layers': {},  # Dictionary of spine segmentation layers
         }
         
         # Initialize the waypoints layer
@@ -73,6 +76,7 @@ class NeuroSAMWidget(QWidget):
         self.path_tracing_widget = PathTracingWidget(self.viewer, self.image, self.state)
         self.segmentation_widget = SegmentationWidget(self.viewer, self.image, self.state)
         self.spine_detection_widget = SpineDetectionWidget(self.viewer, self.image, self.state)
+        self.spine_segmentation_widget = SpineSegmentationWidget(self.viewer, self.image, self.state)
         self.path_visualization_widget = PathVisualizationWidget(self.viewer, self.image, self.state)
         
         # Add modules to tabs
@@ -80,6 +84,7 @@ class NeuroSAMWidget(QWidget):
         self.tabs.addTab(self.path_visualization_widget, "Path Management")
         self.tabs.addTab(self.segmentation_widget, "Segmentation")
         self.tabs.addTab(self.spine_detection_widget, "Spine Detection")
+        self.tabs.addTab(self.spine_segmentation_widget, "Spine Segmentation")
         
         # Connect signals between modules
         self._connect_signals()
@@ -131,6 +136,9 @@ class NeuroSAMWidget(QWidget):
         
         # Connect spine detection signals
         self.spine_detection_widget.spines_detected.connect(self.on_spines_detected)
+        
+        # Connect spine segmentation signals
+        self.spine_segmentation_widget.spine_segmentation_completed.connect(self.on_spine_segmentation_completed)
     
     def on_path_created(self, path_id, path_name, path_data):
         """Handle when a new path is created"""
@@ -141,6 +149,7 @@ class NeuroSAMWidget(QWidget):
         self.path_visualization_widget.update_path_list()
         self.segmentation_widget.update_path_list()
         self.spine_detection_widget.update_path_list()
+        self.spine_segmentation_widget.update_path_list()
     
     def on_path_updated(self, path_id, path_name, path_data):
         """Handle when a path is updated"""
@@ -168,6 +177,11 @@ class NeuroSAMWidget(QWidget):
             # Select first available path
             first_path_id = next(iter(self.state['paths']))
             self.on_path_selected(first_path_id)
+        
+        # Update all modules after path deletion
+        self.segmentation_widget.update_path_list()
+        self.spine_detection_widget.update_path_list()
+        self.spine_segmentation_widget.update_path_list()
     
     def on_segmentation_completed(self, path_id, layer_name):
         """Handle when segmentation is completed for a path"""
@@ -184,3 +198,13 @@ class NeuroSAMWidget(QWidget):
         
         # Store spine positions in state
         self.state['spine_positions'] = spine_positions
+        
+        # Enable spine segmentation for this path
+        self.spine_segmentation_widget.enable_for_path(path_id)
+    
+    def on_spine_segmentation_completed(self, path_id, layer_name):
+        """Handle when spine segmentation is completed for a path"""
+        path_data = self.state['paths'][path_id]
+        self.path_info.setText(f"Spine segmentation completed for {path_data['name']}")
+        
+        napari.utils.notifications.show_info(f"Spine segmentation workflow completed for {path_data['name']}")

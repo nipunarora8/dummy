@@ -464,7 +464,7 @@ class SpineDetectionWidget(QWidget):
         self.setLayout(layout)
         
         layout.addWidget(QLabel("<b>Enhanced Dendritic Spine Detection</b>"))
-        layout.addWidget(QLabel("1. Select a segmented path\n2. Configure detection parameters\n3. Click 'Detect Spines' to find spines"))
+        layout.addWidget(QLabel("1. Select a segmented path\n2. Configure detection parameters\n3. Click 'Detect Spines' to find spines\n4. Detected spines can then be used for segmentation"))
         
         separator1 = QFrame()
         separator1.setFrameShape(QFrame.HLine)
