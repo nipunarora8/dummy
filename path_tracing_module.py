@@ -8,11 +8,11 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Signal
 import sys
 sys.path.append('../path_tracing/brightest-path-lib')
-from brightest_path_lib.algorithm import BidirectionalAStarSearch, WaypointBidirectionalAStarSearch
+from brightest_path_lib.algorithm import EnhancedWaypointAStarSearch
 
 
 class PathTracingWidget(QWidget):
-    """Widget for tracing the brightest path through waypoints in an image."""
+    """Widget for tracing the brightest path with enhanced algorithm backend."""
     
     # Define signals
     path_created = Signal(str, str, object)  # path_id, path_name, path_data
@@ -35,8 +35,8 @@ class PathTracingWidget(QWidget):
         self.image = image
         self.state = state
         
-        # List to store waypoints
-        self.waypoints = []
+        # List to store waypoints as they are clicked
+        self.clicked_points = []
         
         # Settings for path finding
         self.next_path_number = 1
@@ -45,32 +45,51 @@ class PathTracingWidget(QWidget):
         # Flag to prevent recursive event handling
         self.handling_event = False
         
-        # Setup UI
+        # Setup UI (keeping original interface)
         self.setup_ui()
     
     def setup_ui(self):
-        """Create the UI panel with controls"""
+        """Create the UI panel with controls (original interface)"""
         layout = QVBoxLayout()
         layout.setSpacing(2)
         layout.setContentsMargins(2, 2, 2, 2)
         self.setLayout(layout)
         
-        # Waypoints section
+        # Main instruction
+        title = QLabel("<b>Path Tracing</b>")
+        layout.addWidget(title)
+        
+        # Instructions section
+        instructions_section = QWidget()
+        instructions_layout = QVBoxLayout()
+        instructions_layout.setSpacing(2)
+        instructions_layout.setContentsMargins(2, 2, 2, 2)
+        instructions_section.setLayout(instructions_layout)
+        
+        instructions = QLabel(
+            "Instructions:\n"
+            "1. Click points on the dendrite structure\n"
+            "2. Click 'Find Path' to trace the brightest path\n"
+            "3. Use 'Trace Another Path' for additional paths"
+        )
+        instructions.setWordWrap(True)
+        instructions_layout.addWidget(instructions)
+        
+        layout.addWidget(instructions_section)
+        
+        # Waypoint controls section
         waypoints_section = QWidget()
         waypoints_layout = QVBoxLayout()
         waypoints_layout.setSpacing(2)
         waypoints_layout.setContentsMargins(2, 2, 2, 2)
         waypoints_section.setLayout(waypoints_layout)
         
-        waypoints_instr = QLabel("1. Click on the image for points\n2. Now click on Find Path to find the brightest path\n3. Head to other tabs for additional analyses")
-        waypoints_layout.addWidget(waypoints_instr)
-        
-        self.select_waypoints_btn = QPushButton("Select Waypoints Layer")
+        self.select_waypoints_btn = QPushButton("Start Point Selection")
         self.select_waypoints_btn.setFixedHeight(22)
         self.select_waypoints_btn.clicked.connect(self.activate_waypoints_layer)
         waypoints_layout.addWidget(self.select_waypoints_btn)
         
-        self.waypoints_status = QLabel("Status: No waypoints set")
+        self.waypoints_status = QLabel("Status: Click to start selecting points")
         waypoints_layout.addWidget(self.waypoints_status)
         layout.addWidget(waypoints_section)
         
@@ -80,39 +99,47 @@ class PathTracingWidget(QWidget):
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
         
-        # Find path button
-        find_btns_layout = QHBoxLayout()
-        find_btns_layout.setSpacing(2)
-        find_btns_layout.setContentsMargins(2, 2, 2, 2)
+        # Action buttons
+        buttons_layout = QVBoxLayout()
+        buttons_layout.setSpacing(2)
         
+        # Main path finding button (same as before)
         self.find_path_btn = QPushButton("Find Path")
-        self.find_path_btn.setFixedHeight(22)
+        self.find_path_btn.setFixedHeight(26)
+        self.find_path_btn.setStyleSheet("font-weight: bold; background-color: #4CAF50; color: white;")
         self.find_path_btn.clicked.connect(self.find_path)
         self.find_path_btn.setEnabled(False)
-        find_btns_layout.addWidget(self.find_path_btn)
+        buttons_layout.addWidget(self.find_path_btn)
         
-        layout.addLayout(find_btns_layout)
+        layout.addLayout(buttons_layout)
         
-        # Trace Another Path button
+        # Management buttons
+        management_layout = QHBoxLayout()
+        management_layout.setSpacing(2)
+        
         self.trace_another_btn = QPushButton("Trace Another Path")
         self.trace_another_btn.setFixedHeight(22)
         self.trace_another_btn.clicked.connect(self.trace_another_path)
         self.trace_another_btn.setEnabled(False)
-        layout.addWidget(self.trace_another_btn)
+        management_layout.addWidget(self.trace_another_btn)
         
-        # Clear points button
-        self.clear_points_btn = QPushButton("Clear Points (Start Over)")
+        self.clear_points_btn = QPushButton("Clear All Points")
         self.clear_points_btn.setFixedHeight(22)
         self.clear_points_btn.clicked.connect(self.clear_points)
-        layout.addWidget(self.clear_points_btn)
+        management_layout.addWidget(self.clear_points_btn)
+        
+        layout.addLayout(management_layout)
         
         # Status messages
+        self.status_label = QLabel("")
+        layout.addWidget(self.status_label)
+        
         self.error_status = QLabel("")
         self.error_status.setStyleSheet("color: red;")
         layout.addWidget(self.error_status)
     
     def activate_waypoints_layer(self):
-        """Activate the waypoints layer for selecting"""
+        """Activate the waypoints layer for selecting points"""
         if self.handling_event:
             return
             
@@ -120,7 +147,8 @@ class PathTracingWidget(QWidget):
             self.handling_event = True
             self.viewer.layers.selection.active = self.state['waypoints_layer']
             self.error_status.setText("")
-            napari.utils.notifications.show_info("Waypoints layer activated. Click on the image to set waypoints.")
+            self.status_label.setText("Click points on the dendrite structure")
+            napari.utils.notifications.show_info("Click points on the dendrite")
         except Exception as e:
             error_msg = f"Error activating waypoints layer: {str(e)}"
             napari.utils.notifications.show_info(error_msg)
@@ -130,7 +158,6 @@ class PathTracingWidget(QWidget):
     
     def on_waypoints_changed(self, event=None):
         """Handle when waypoints are added or changed"""
-        # Prevent recursive function calls
         if self.handling_event:
             return
             
@@ -139,7 +166,7 @@ class PathTracingWidget(QWidget):
             
             waypoints_layer = self.state['waypoints_layer']
             if len(waypoints_layer.data) > 0:
-                # Check all points are within image bounds
+                # Validate points are within image bounds
                 valid_points = []
                 for point in waypoints_layer.data:
                     valid = True
@@ -156,124 +183,68 @@ class PathTracingWidget(QWidget):
                     waypoints_layer.data = np.array(valid_points)
                     napari.utils.notifications.show_info("Some points were outside image bounds and were removed.")
                 
-                # Store valid waypoints
-                self.waypoints = [point.astype(int) for point in valid_points]
+                # Convert to integer coordinates and store
+                self.clicked_points = [point.astype(int) for point in valid_points]
                 
                 # Update status
-                self.waypoints_status.setText(f"Status: {len(self.waypoints)} waypoints set")
+                num_points = len(self.clicked_points)
+                self.waypoints_status.setText(f"Status: {num_points} points selected")
                 
-                # Enable find path button if we have at least 2 waypoints
-                self.find_path_btn.setEnabled(len(self.waypoints) >= 2)
+                # Enable buttons if we have enough points
+                self.find_path_btn.setEnabled(num_points >= 2)
+                
+                if num_points >= 2:
+                    self.status_label.setText("Ready to find path!")
+                else:
+                    self.status_label.setText(f"Need at least 2 points (currently have {num_points})")
             else:
-                self.waypoints = []
-                self.waypoints_status.setText("Status: No waypoints set")
+                self.clicked_points = []
+                self.waypoints_status.setText("Status: Click to start selecting points")
                 self.find_path_btn.setEnabled(False)
+                self.status_label.setText("")
         except Exception as e:
-            napari.utils.notifications.show_info(f"Error setting waypoints: {str(e)}")
+            napari.utils.notifications.show_info(f"Error processing waypoints: {str(e)}")
             print(f"Error details: {str(e)}")
         finally:
             self.handling_event = False
     
-    def find_distance(self, start_point, end_point):
-        """Calculate the distance between two points in 3D space."""
-        return np.sqrt(np.sum((start_point - end_point) ** 2))
-    
-    def find_farthest_points(self, points):
-        """Find the two points with the maximum distance between them."""
-        points = [np.array(p) for p in points]
-        max_distance = 0
-        start_point = None
-        end_point = None
-        
-        # Find the two points that are farthest apart
-        for i in range(len(points)):
-            for j in range(i+1, len(points)):
-                dist = self.find_distance(points[i], points[j])
-                if dist > max_distance:
-                    max_distance = dist
-                    start_point = points[i].copy()
-                    end_point = points[j].copy()
-        
-        # Remove the start and end points from the list to get the waypoints
-        if start_point is not None and end_point is not None:
-            waypoints = [p for p in points if not np.array_equal(p, start_point) and not np.array_equal(p, end_point)]
-            return start_point, end_point, waypoints
-        
-        return None, None, []
-    
-    def trace_another_path(self):
-        """Reset for tracing a new path while preserving existing paths"""
-        # Clear current waypoints to start fresh
-        self.waypoints = []
-        self.state['waypoints_layer'].data = np.empty((0, self.image.ndim))
-        
-        # Reset UI for new path
-        self.waypoints_status.setText("Status: No waypoints set")
-        self.find_path_btn.setEnabled(False)
-        self.trace_another_btn.setEnabled(False)
-        
-        # Activate the waypoints layer for the new path
-        self.viewer.layers.selection.active = self.state['waypoints_layer']
-        napari.utils.notifications.show_info("Ready to trace a new path. Click on the image to set waypoints.")
-    
-    def clear_points(self):
-        """Clear all waypoints and path without saving"""
-        self.waypoints = []
-        self.state['waypoints_layer'].data = np.empty((0, self.image.ndim))
-        
-        # Clear traced path layer if it exists
-        if self.state['traced_path_layer'] is not None:
-            self.state['traced_path_layer'].data = np.empty((0, self.image.ndim))
-            self.state['traced_path_layer'].visible = False
-            
-        # Reset UI
-        self.waypoints_status.setText("Status: No waypoints set")
-        
-        # Reset buttons
-        self.find_path_btn.setEnabled(False)
-        self.trace_another_btn.setEnabled(False)
-        
-        napari.utils.notifications.show_info("All points and path cleared. Ready to start over.")
-    
     def find_path(self):
-        """Find the brightest path through the waypoints"""
+        """Find path using the enhanced algorithm (backend only change)"""
         if self.handling_event:
             return
             
         try:
             self.handling_event = True
             
-            if len(self.waypoints) < 2:
-                napari.utils.notifications.show_info("Please set at least 2 waypoints")
-                self.error_status.setText("Error: Please set at least 2 waypoints")
+            if len(self.clicked_points) < 2:
+                napari.utils.notifications.show_info("Please select at least 2 points")
+                self.error_status.setText("Error: Please select at least 2 points")
                 return
             
             # Clear any previous error messages
             self.error_status.setText("")
-            napari.utils.notifications.show_info("Finding brightest path through waypoints...")
+            self.status_label.setText("Finding path...")
             
-            # Find the two farthest points to use as start and end
-            waypoints_copy = [point.copy() for point in self.waypoints]
-            start_point, end_point, intermediate_waypoints = self.find_farthest_points(waypoints_copy)
+            # Convert clicked points to the format expected by the algorithm
+            points_list = [point.tolist() for point in self.clicked_points]
             
-            if start_point is None or end_point is None:
-                napari.utils.notifications.show_info("Failed to determine start and end points")
-                self.error_status.setText("Error: Failed to determine start and end points")
-                return
-
-            search_algorithm = WaypointBidirectionalAStarSearch(
-                self.image, 
-                start_point=start_point, 
-                goal_point=end_point,
-                waypoints=intermediate_waypoints
+            napari.utils.notifications.show_info("Finding brightest path...")
+            
+            # Use enhanced algorithm in backend (but user doesn't see the difference)
+            search = EnhancedWaypointAStarSearch(
+                image=self.image,
+                points_list=points_list,
+                intensity_threshold=0.3,  # Fixed sensible default
+                auto_z_detection=True,    # Always enabled for better results
+                waypoint_z_optimization=True,  # Always enabled for better results
+                verbose=True  # Keep quiet unless debugging
             )
-            napari.utils.notifications.show_info(f"Using waypoint search with {len(intermediate_waypoints)} intermediate points")
             
-            # Find the path
-            brightest_path = search_algorithm.search()
+            # Run the search
+            path, start_point, goal_point, processed_waypoints = search.search()
             
-            # Process the found path
-            if brightest_path is not None and len(brightest_path) > 0:
+            # Check if path was found
+            if search.found_path and len(path) > 0:
                 # Generate path name
                 path_name = f"Path {self.next_path_number}"
                 self.next_path_number += 1
@@ -282,7 +253,7 @@ class PathTracingWidget(QWidget):
                 path_color = self.get_next_color()
                 
                 # Create a new layer for this path
-                path_data = np.array(brightest_path)
+                path_data = np.array(path)
                 path_layer = self.viewer.add_points(
                     path_data,
                     name=path_name,
@@ -291,52 +262,32 @@ class PathTracingWidget(QWidget):
                     opacity=0.8
                 )
                 
-                # For 3D visualization, create a traced path that shows the whole path in every frame
+                # Update 3D visualization if applicable
                 if self.image.ndim > 2 and self.state['traced_path_layer'] is not None:
-                    # Get the z-range (frame range) that we need to span
-                    z_values = [point[0] for point in brightest_path]
-                    min_z = int(min(z_values))
-                    max_z = int(max(z_values))
-                    
-                    # Create a projection of the path onto every frame in the range
-                    traced_points = []
-                    
-                    # For each frame in our range
-                    for z in range(min_z, max_z + 1):
-                        # Add all path points to this frame by changing their z-coordinate
-                        for point in brightest_path:
-                            # Create a new point with the current frame's z-coordinate
-                            new_point = point.copy()
-                            new_point[0] = z  # Set the z-coordinate to the current frame
-                            traced_points.append(new_point)
-                    
-                    # Update the traced path layer with all these points
-                    self.state['traced_path_layer'].data = np.array(traced_points)
-                    self.state['traced_path_layer'].visible = True
-                    
-                    # Navigate to the frame where the path starts to provide better initial view
-                    self.viewer.dims.set_point(0, min_z)
+                    self._update_traced_path_visualization(path)
                 
                 # Generate a unique ID for this path
                 path_id = str(uuid.uuid4())
                 
-                # Store the path with all its data
+                # Store the path (enhanced backend data but simplified frontend)
                 self.state['paths'][path_id] = {
                     'name': path_name,
                     'data': path_data,
                     'start': start_point.copy(),
-                    'end': end_point.copy(),
-                    'waypoints': [wp.copy() for wp in intermediate_waypoints] if intermediate_waypoints else [],
+                    'end': goal_point.copy(),
+                    'waypoints': [wp.copy() for wp in processed_waypoints] if processed_waypoints else [],
                     'visible': True,
-                    'layer': path_layer
+                    'layer': path_layer,
+                    'original_clicks': [point.copy() for point in self.clicked_points]
                 }
                 
                 # Store reference to the layer
                 self.state['path_layers'][path_id] = path_layer
                 
                 # Update UI
-                msg = f"Path found with {len(brightest_path)} points, saved as {path_name}"
+                msg = f"Path found: {len(path)} points"
                 napari.utils.notifications.show_info(msg)
+                self.status_label.setText(f"Success: {path_name} created")
                 
                 # Enable trace another path button
                 self.trace_another_btn.setEnabled(True)
@@ -349,23 +300,91 @@ class PathTracingWidget(QWidget):
                     
             else:
                 # No path found
-                msg = "No path found"
+                msg = "Could not find a path"
                 napari.utils.notifications.show_info(msg)
-                self.error_status.setText("Error: No path found between selected points")
+                self.error_status.setText("Error: No path found")
+                self.status_label.setText("Try selecting different points")
+                
         except Exception as e:
-            msg = f"Error finding path: {e}"
+            msg = f"Error in path finding: {e}"
             napari.utils.notifications.show_info(msg)
             self.error_status.setText(f"Error: {str(e)}")
+            print(f"Path finding error: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.handling_event = False
     
+    def _update_traced_path_visualization(self, path):
+        """Update the 3D traced path visualization"""
+        if self.state['traced_path_layer'] is None:
+            return
+            
+        try:
+            # Get the z-range of the path
+            path_array = np.array(path)
+            z_values = [point[0] for point in path]
+            min_z = int(min(z_values))
+            max_z = int(max(z_values))
+            
+            # Create a projection of the path onto every frame in the range
+            traced_points = []
+            for z in range(min_z, max_z + 1):
+                for point in path:
+                    new_point = point.copy()
+                    new_point[0] = z
+                    traced_points.append(new_point)
+            
+            # Update the traced path layer
+            if traced_points:
+                self.state['traced_path_layer'].data = np.array(traced_points)
+                self.state['traced_path_layer'].visible = True
+                self.viewer.dims.set_point(0, min_z)
+        except Exception as e:
+            print(f"Error updating traced path visualization: {e}")
+    
+    def trace_another_path(self):
+        """Reset for tracing a new path while preserving existing paths"""
+        # Clear current points
+        self.clicked_points = []
+        self.state['waypoints_layer'].data = np.empty((0, self.image.ndim))
+        
+        # Reset UI for new path
+        self.waypoints_status.setText("Status: Click to start selecting points")
+        self.status_label.setText("Ready for new path - click points on dendrite")
+        self.find_path_btn.setEnabled(False)
+        self.trace_another_btn.setEnabled(False)
+        
+        # Activate the waypoints layer for the new path
+        self.viewer.layers.selection.active = self.state['waypoints_layer']
+        napari.utils.notifications.show_info("Ready to trace a new path. Click points on the dendrite.")
+    
+    def clear_points(self):
+        """Clear all waypoints and paths"""
+        self.clicked_points = []
+        self.state['waypoints_layer'].data = np.empty((0, self.image.ndim))
+        
+        # Clear traced path layer if it exists
+        if self.state['traced_path_layer'] is not None:
+            self.state['traced_path_layer'].data = np.empty((0, self.image.ndim))
+            self.state['traced_path_layer'].visible = False
+            
+        # Reset UI
+        self.waypoints_status.setText("Status: Click to start selecting points")
+        self.status_label.setText("")
+        self.error_status.setText("")
+        
+        # Reset buttons
+        self.find_path_btn.setEnabled(False)
+        self.trace_another_btn.setEnabled(False)
+        
+        napari.utils.notifications.show_info("All points cleared. Ready to start over.")
+    
     def get_next_color(self):
         """Get the next color from the predefined list"""
-        # List of named colors that work well for paths
         colors = ['cyan', 'magenta', 'green', 'blue', 'orange', 
                   'purple', 'teal', 'coral', 'gold', 'lavender']
         
-        # Get the next color and increment the counter
         color = colors[self.color_idx % len(colors)]
         self.color_idx += 1
         
@@ -384,28 +403,37 @@ class PathTracingWidget(QWidget):
                 
             path_data = self.state['paths'][path_id]
             
-            # Update waypoints with start, end, and intermediate waypoints
-            new_waypoints = []
-            if 'start' in path_data and path_data['start'] is not None:
-                new_waypoints.append(path_data['start'])
+            # Check if this path has original clicks stored
+            if 'original_clicks' in path_data:
+                # Load the original clicked points
+                self.clicked_points = [np.array(point) for point in path_data['original_clicks']]
                 
-            if 'waypoints' in path_data and path_data['waypoints']:
-                new_waypoints.extend(path_data['waypoints'])
+                # Update the waypoints layer
+                if self.clicked_points:
+                    self.state['waypoints_layer'].data = np.array(self.clicked_points)
+                    self.waypoints_status.setText(f"Status: {len(self.clicked_points)} points loaded")
+            else:
+                # Fallback - reconstruct from start, waypoints, and end
+                new_waypoints = []
+                if 'start' in path_data and path_data['start'] is not None:
+                    new_waypoints.append(path_data['start'])
+                    
+                if 'waypoints' in path_data and path_data['waypoints']:
+                    new_waypoints.extend(path_data['waypoints'])
+                    
+                if 'end' in path_data and path_data['end'] is not None:
+                    new_waypoints.append(path_data['end'])
                 
-            if 'end' in path_data and path_data['end'] is not None:
-                new_waypoints.append(path_data['end'])
+                # Update the waypoints layer
+                if new_waypoints:
+                    self.state['waypoints_layer'].data = np.array(new_waypoints)
+                    self.clicked_points = new_waypoints
+                    self.waypoints_status.setText(f"Status: {len(new_waypoints)} points loaded")
             
-            # Update the waypoints layer
-            if new_waypoints:
-                self.state['waypoints_layer'].data = np.array(new_waypoints)
-                self.waypoints = new_waypoints
-                self.waypoints_status.setText(f"Status: {len(new_waypoints)} waypoints loaded")
-            
-            # Enable find path button
-            self.find_path_btn.setEnabled(len(new_waypoints) >= 2)
-            
-            # Enable trace another path button
-            self.trace_another_btn.setEnabled(True)
+            # Enable buttons
+            if len(self.clicked_points) >= 2:
+                self.find_path_btn.setEnabled(True)
+                self.trace_another_btn.setEnabled(True)
                 
             # Clear any error messages
             self.error_status.setText("")

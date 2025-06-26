@@ -4,7 +4,7 @@ from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QTabWidget, QLabel
 )
 
-from path_tracing_module import PathTracingWidget
+from path_tracing_module import PathTracingWidget  # Back to original name
 from segmentation_module import SegmentationWidget
 from spine_detection_module import SpineDetectionWidget
 from spine_segmentation_module import SpineSegmentationWidget
@@ -55,7 +55,7 @@ class NeuroSAMWidget(QWidget):
         # Initialize the waypoints layer
         self.state['waypoints_layer'] = self.viewer.add_points(
             np.empty((0, self.image.ndim)),
-            name='Waypoints',
+            name='Point Selection',
             size=15,
             face_color='cyan',
             symbol='x'
@@ -72,7 +72,7 @@ class NeuroSAMWidget(QWidget):
                 visible=False
             )
         
-        # Initialize modules
+        # Initialize modules (original interface, enhanced backend)
         self.path_tracing_widget = PathTracingWidget(self.viewer, self.image, self.state)
         self.segmentation_widget = SegmentationWidget(self.viewer, self.image, self.state)
         self.spine_detection_widget = SpineDetectionWidget(self.viewer, self.image, self.state)
@@ -97,14 +97,14 @@ class NeuroSAMWidget(QWidget):
         
         # Activate the waypoints layer to begin workflow
         self.viewer.layers.selection.active = self.state['waypoints_layer']
-        napari.utils.notifications.show_info("Waypoints layer activated. Click on the image to set waypoints.")
+        napari.utils.notifications.show_info("Path Tracing ready. Click points on the dendrite structure.")
 
     def setup_ui(self):
         """Create the UI panel with controls"""
         layout = QVBoxLayout()
         layout.setSpacing(2)
         layout.setContentsMargins(3, 3, 3, 3)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(320)  # Original width
         self.setLayout(layout)
         
         # Title
@@ -118,7 +118,7 @@ class NeuroSAMWidget(QWidget):
         layout.addWidget(self.tabs)
         
         # Current path info at the bottom
-        self.path_info = QLabel("Path: Not calculated")
+        self.path_info = QLabel("Path: Ready for tracing")
         layout.addWidget(self.path_info)
     
     def _connect_signals(self):
@@ -143,18 +143,25 @@ class NeuroSAMWidget(QWidget):
     def on_path_created(self, path_id, path_name, path_data):
         """Handle when a new path is created"""
         self.state['current_path_id'] = path_id
-        self.path_info.setText(f"Path: {path_name} with {len(path_data)} points")
+        
+        # Simple status message (no enhanced details in UI)
+        num_points = len(path_data)
+        message = f"{path_name}: {num_points} points"
+        self.path_info.setText(f"Path: {message}")
         
         # Update all modules with the new path
         self.path_visualization_widget.update_path_list()
         self.segmentation_widget.update_path_list()
         self.spine_detection_widget.update_path_list()
         self.spine_segmentation_widget.update_path_list()
+        
+        # Simple success notification
+        napari.utils.notifications.show_info(f"Path created successfully! {num_points} points")
     
     def on_path_updated(self, path_id, path_name, path_data):
         """Handle when a path is updated"""
         self.state['current_path_id'] = path_id
-        self.path_info.setText(f"Path: {path_name} with {len(path_data)} points")
+        self.path_info.setText(f"Path: {path_name} with {len(path_data)} points (Updated)")
         
         # Update visualization
         self.path_visualization_widget.update_path_visualization()
@@ -163,7 +170,10 @@ class NeuroSAMWidget(QWidget):
         """Handle when a path is selected from the list"""
         self.state['current_path_id'] = path_id
         path_data = self.state['paths'][path_id]
-        self.path_info.setText(f"Path: {path_data['name']} with {len(path_data['data'])} points")
+        
+        # Simple status message
+        message = f"{path_data['name']} with {len(path_data['data'])} points"
+        self.path_info.setText(f"Path: {message}")
         
         # Update waypoints display
         self.path_tracing_widget.load_path_waypoints(path_id)
@@ -171,7 +181,7 @@ class NeuroSAMWidget(QWidget):
     def on_path_deleted(self, path_id):
         """Handle when a path is deleted"""
         if not self.state['paths']:
-            self.path_info.setText("Path: Not calculated")
+            self.path_info.setText("Path: Ready for tracing")
             self.state['current_path_id'] = None
         else:
             # Select first available path
@@ -207,4 +217,4 @@ class NeuroSAMWidget(QWidget):
         path_data = self.state['paths'][path_id]
         self.path_info.setText(f"Spine segmentation completed for {path_data['name']}")
         
-        napari.utils.notifications.show_info(f"Spine segmentation workflow completed for {path_data['name']}")
+        napari.utils.notifications.show_info(f"Complete workflow finished for {path_data['name']}")

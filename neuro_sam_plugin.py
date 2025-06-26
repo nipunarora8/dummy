@@ -1,11 +1,11 @@
 import napari
 import numpy as np
 import imageio as io
-from main_widget import NeuroSAMWidget
+from main_widget import NeuroSAMWidget  # Back to original name
 
 def run_neuro_sam(image=None, image_path=None):
     """
-    Launch the NeuroSAM plugin with path tracing, segmentation, and spine detection
+    Launch the NeuroSAM plugin with enhanced path tracing algorithm
     
     Parameters:
     -----------
@@ -38,7 +38,7 @@ def run_neuro_sam(image=None, image_path=None):
     # Create a viewer
     viewer = napari.Viewer()
     
-    # Create and add our widget
+    # Create and add our widget (same interface, enhanced backend)
     neuro_sam_widget = NeuroSAMWidget(viewer, image)
     viewer.window.add_dock_widget(
         neuro_sam_widget, name="Neuro-SAM", area="right"
