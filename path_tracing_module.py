@@ -3,16 +3,88 @@ import numpy as np
 import uuid
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, 
-    QHBoxLayout, QFrame
+    QHBoxLayout, QFrame, QCheckBox, QComboBox, QDoubleSpinBox
 )
 from qtpy.QtCore import Signal
 import sys
 sys.path.append('../path_tracing/brightest-path-lib')
 from brightest_path_lib.algorithm import EnhancedWaypointAStarSearch
+from scipy.interpolate import splprep, splev
+
+
+class PathSmoother:
+    """B-spline based path smoothing for dendrite traces"""
+    
+    def __init__(self):
+        pass
+    
+    def smooth_path(self, path_points, smoothing_factor=None, 
+                   num_points=None, preserve_endpoints=True):
+        """
+        Smooth a 3D path using B-spline interpolation
+        
+        Args:
+            path_points: numpy array of shape (N, 3) with [z, y, x] coordinates
+            smoothing_factor: B-spline smoothing parameter (higher = more smooth)
+            num_points: number of points in smoothed path (None = same as input)
+            preserve_endpoints: whether to keep original start/end points
+        
+        Returns:
+            Smoothed path as numpy array
+        """
+        if len(path_points) < 3:
+            return path_points.copy()
+        
+        # Store original endpoints
+        start_point = path_points[0].copy()
+        end_point = path_points[-1].copy()
+        
+        # Apply B-spline smoothing
+        smoothed_path = self._bspline_smooth(path_points, smoothing_factor, num_points)
+        
+        # Restore endpoints if requested
+        if preserve_endpoints and len(smoothed_path) > 0:
+            smoothed_path[0] = start_point
+            smoothed_path[-1] = end_point
+        
+        return smoothed_path
+    
+    def _bspline_smooth(self, path_points, smoothing_factor=None, num_points=None):
+        """B-spline smoothing using scipy.interpolate.splprep"""
+        if smoothing_factor is None:
+            # Auto-determine smoothing factor based on path length
+            path_length = len(path_points)
+            smoothing_factor = max(0, path_length - np.sqrt(2 * path_length))
+        
+        if num_points is None:
+            num_points = len(path_points)
+        
+        try:
+            # Prepare coordinates
+            x = path_points[:, 2]  # x coordinates
+            y = path_points[:, 1]  # y coordinates
+            z = path_points[:, 0]  # z coordinates
+            
+            # Fit B-spline (k=3 for cubic, k=min(3, len-1) for short paths)
+            k = min(3, len(path_points) - 1)
+            tck, u = splprep([x, y, z], s=smoothing_factor, k=k)
+            
+            # Generate smoothed points
+            u_new = np.linspace(0, 1, num_points)
+            x_smooth, y_smooth, z_smooth = splev(u_new, tck)
+            
+            # Combine back to [z, y, x] format
+            smoothed_path = np.column_stack([z_smooth, y_smooth, x_smooth])
+            
+            return smoothed_path
+            
+        except Exception as e:
+            print(f"B-spline smoothing failed: {e}, falling back to original path")
+            return path_points.copy()
 
 
 class PathTracingWidget(QWidget):
-    """Widget for tracing the brightest path with enhanced algorithm backend."""
+    """Widget for tracing the brightest path with enhanced algorithm backend and B-spline smoothing."""
     
     # Define signals
     path_created = Signal(str, str, object)  # path_id, path_name, path_data
@@ -45,11 +117,14 @@ class PathTracingWidget(QWidget):
         # Flag to prevent recursive event handling
         self.handling_event = False
         
+        # Initialize path smoother
+        self.path_smoother = PathSmoother()
+        
         # Setup UI (keeping original interface)
         self.setup_ui()
     
     def setup_ui(self):
-        """Create the UI panel with controls (original interface)"""
+        """Create the UI panel with controls (original interface + smoothing)"""
         layout = QVBoxLayout()
         layout.setSpacing(2)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -98,6 +173,39 @@ class PathTracingWidget(QWidget):
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
+        
+        # Smoothing controls section
+        smoothing_section = QWidget()
+        smoothing_layout = QVBoxLayout()
+        smoothing_layout.setSpacing(2)
+        smoothing_layout.setContentsMargins(2, 2, 2, 2)
+        smoothing_section.setLayout(smoothing_layout)
+        
+        # Smoothing checkbox
+        self.enable_smoothing_cb = QCheckBox("Enable B-spline Path Smoothing")
+        self.enable_smoothing_cb.setChecked(True)
+        self.enable_smoothing_cb.setToolTip("Apply B-spline smoothing to traced paths for smooth, natural curves")
+        smoothing_layout.addWidget(self.enable_smoothing_cb)
+        
+        # Smoothing factor
+        factor_layout = QHBoxLayout()
+        factor_layout.setSpacing(2)
+        factor_layout.addWidget(QLabel("Smoothing:"))
+        self.smoothing_factor_spin = QDoubleSpinBox()
+        self.smoothing_factor_spin.setRange(0.0, 10.0)
+        self.smoothing_factor_spin.setSingleStep(0.1)
+        self.smoothing_factor_spin.setValue(1.0)
+        self.smoothing_factor_spin.setToolTip("Higher values = more smoothing (0 = no smoothing)")
+        factor_layout.addWidget(self.smoothing_factor_spin)
+        smoothing_layout.addLayout(factor_layout)
+        
+        layout.addWidget(smoothing_section)
+        
+        # Add separator
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.HLine)
+        separator2.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator2)
         
         # Action buttons
         buttons_layout = QVBoxLayout()
@@ -209,7 +317,7 @@ class PathTracingWidget(QWidget):
             self.handling_event = False
     
     def find_path(self):
-        """Find path using the enhanced algorithm (backend only change)"""
+        """Find path using the enhanced algorithm with optional smoothing"""
         if self.handling_event:
             return
             
@@ -230,14 +338,14 @@ class PathTracingWidget(QWidget):
             
             napari.utils.notifications.show_info("Finding brightest path...")
             
-            # Use enhanced algorithm in backend (but user doesn't see the difference)
+            # Use enhanced algorithm in backend
             search = EnhancedWaypointAStarSearch(
                 image=self.image,
                 points_list=points_list,
-                intensity_threshold=0.3,  # Fixed sensible default
-                auto_z_detection=True,    # Always enabled for better results
-                waypoint_z_optimization=True,  # Always enabled for better results
-                verbose=True  # Keep quiet unless debugging
+                intensity_threshold=0.3,
+                auto_z_detection=True,
+                waypoint_z_optimization=True,
+                verbose=True
             )
             
             # Run the search
@@ -245,6 +353,27 @@ class PathTracingWidget(QWidget):
             
             # Check if path was found
             if search.found_path and len(path) > 0:
+                # Convert path to numpy array
+                path_data = np.array(path)
+                
+                # Apply smoothing if enabled
+                if self.enable_smoothing_cb.isChecked() and len(path_data) >= 3:
+                    smoothing_factor = self.smoothing_factor_spin.value()
+                    
+                    if smoothing_factor > 0:
+                        self.status_label.setText("Applying B-spline smoothing...")
+                        
+                        # Smooth the path using B-spline
+                        smoothed_path = self.path_smoother.smooth_path(
+                            path_data, 
+                            smoothing_factor=smoothing_factor,
+                            preserve_endpoints=True
+                        )
+                        
+                        # Update path data
+                        path_data = smoothed_path
+                        napari.utils.notifications.show_info("Applied B-spline smoothing")
+                
                 # Generate path name
                 path_name = f"Path {self.next_path_number}"
                 self.next_path_number += 1
@@ -253,7 +382,6 @@ class PathTracingWidget(QWidget):
                 path_color = self.get_next_color()
                 
                 # Create a new layer for this path
-                path_data = np.array(path)
                 path_layer = self.viewer.add_points(
                     path_data,
                     name=path_name,
@@ -264,7 +392,7 @@ class PathTracingWidget(QWidget):
                 
                 # Update 3D visualization if applicable
                 if self.image.ndim > 2 and self.state['traced_path_layer'] is not None:
-                    self._update_traced_path_visualization(path)
+                    self._update_traced_path_visualization(path_data)
                 
                 # Generate a unique ID for this path
                 path_id = str(uuid.uuid4())
@@ -278,16 +406,18 @@ class PathTracingWidget(QWidget):
                     'waypoints': [wp.copy() for wp in processed_waypoints] if processed_waypoints else [],
                     'visible': True,
                     'layer': path_layer,
-                    'original_clicks': [point.copy() for point in self.clicked_points]
+                    'original_clicks': [point.copy() for point in self.clicked_points],
+                    'smoothed': self.enable_smoothing_cb.isChecked() and smoothing_factor > 0
                 }
                 
                 # Store reference to the layer
                 self.state['path_layers'][path_id] = path_layer
                 
                 # Update UI
-                msg = f"Path found: {len(path)} points"
+                smoothing_msg = " (smoothed)" if self.state['paths'][path_id]['smoothed'] else ""
+                msg = f"Path found: {len(path_data)} points{smoothing_msg}"
                 napari.utils.notifications.show_info(msg)
-                self.status_label.setText(f"Success: {path_name} created")
+                self.status_label.setText(f"Success: {path_name} created{smoothing_msg}")
                 
                 # Enable trace another path button
                 self.trace_another_btn.setEnabled(True)
@@ -437,6 +567,12 @@ class PathTracingWidget(QWidget):
                 
             # Clear any error messages
             self.error_status.setText("")
+            
+            # Show smoothing status if path was smoothed
+            if path_data.get('smoothed', False):
+                self.status_label.setText(f"Loaded smoothed path: {path_data['name']}")
+            else:
+                self.status_label.setText(f"Loaded path: {path_data['name']}")
             
             napari.utils.notifications.show_info(f"Loaded {path_data['name']}")
         except Exception as e:

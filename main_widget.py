@@ -4,7 +4,7 @@ from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QTabWidget, QLabel
 )
 
-from path_tracing_module import PathTracingWidget  # Back to original name
+from path_tracing_module import PathTracingWidget  # Updated with smoothing
 from segmentation_module import SegmentationWidget
 from spine_detection_module import SpineDetectionWidget
 from spine_segmentation_module import SpineSegmentationWidget
@@ -12,7 +12,7 @@ from visualization_module import PathVisualizationWidget
 
 
 class NeuroSAMWidget(QWidget):
-    """Main widget for the NeuroSAM napari plugin, integrating path tracing, 
+    """Main widget for the NeuroSAM napari plugin, integrating path tracing with B-spline smoothing, 
     segmentation, spine detection, and spine segmentation functionality.
     """
     
@@ -72,7 +72,7 @@ class NeuroSAMWidget(QWidget):
                 visible=False
             )
         
-        # Initialize modules (original interface, enhanced backend)
+        # Initialize modules (now with smoothing support)
         self.path_tracing_widget = PathTracingWidget(self.viewer, self.image, self.state)
         self.segmentation_widget = SegmentationWidget(self.viewer, self.image, self.state)
         self.spine_detection_widget = SpineDetectionWidget(self.viewer, self.image, self.state)
@@ -104,11 +104,11 @@ class NeuroSAMWidget(QWidget):
         layout = QVBoxLayout()
         layout.setSpacing(2)
         layout.setContentsMargins(3, 3, 3, 3)
-        self.setMinimumWidth(320)  # Original width
+        self.setMinimumWidth(320)
         self.setLayout(layout)
         
         # Title
-        title = QLabel("<b>Neuro-SAM</b>")
+        title = QLabel("<b>Neuro-SAM with B-spline Smoothing</b>")
         layout.addWidget(title)
         
         # Create tabs for different functionality
@@ -144,9 +144,17 @@ class NeuroSAMWidget(QWidget):
         """Handle when a new path is created"""
         self.state['current_path_id'] = path_id
         
-        # Simple status message (no enhanced details in UI)
+        # Get path information including smoothing status
+        path_info = self.state['paths'][path_id]
         num_points = len(path_data)
-        message = f"{path_name}: {num_points} points"
+        smoothed = path_info.get('smoothed', False)
+        
+        # Create status message with smoothing info
+        if smoothed:
+            message = f"{path_name}: {num_points} points (smoothed)"
+        else:
+            message = f"{path_name}: {num_points} points"
+        
         self.path_info.setText(f"Path: {message}")
         
         # Update all modules with the new path
@@ -155,13 +163,26 @@ class NeuroSAMWidget(QWidget):
         self.spine_detection_widget.update_path_list()
         self.spine_segmentation_widget.update_path_list()
         
-        # Simple success notification
-        napari.utils.notifications.show_info(f"Path created successfully! {num_points} points")
+        # Success notification with smoothing info
+        if smoothed:
+            napari.utils.notifications.show_info(f"Smoothed path created! {num_points} points")
+        else:
+            napari.utils.notifications.show_info(f"Path created! {num_points} points")
     
     def on_path_updated(self, path_id, path_name, path_data):
         """Handle when a path is updated"""
         self.state['current_path_id'] = path_id
-        self.path_info.setText(f"Path: {path_name} with {len(path_data)} points (Updated)")
+        
+        # Get path information including smoothing status
+        path_info = self.state['paths'][path_id]
+        smoothed = path_info.get('smoothed', False)
+        
+        if smoothed:
+            status_msg = f"{path_name} with {len(path_data)} points (smoothed, updated)"
+        else:
+            status_msg = f"{path_name} with {len(path_data)} points (updated)"
+            
+        self.path_info.setText(f"Path: {status_msg}")
         
         # Update visualization
         self.path_visualization_widget.update_path_visualization()
@@ -171,8 +192,13 @@ class NeuroSAMWidget(QWidget):
         self.state['current_path_id'] = path_id
         path_data = self.state['paths'][path_id]
         
-        # Simple status message
-        message = f"{path_data['name']} with {len(path_data['data'])} points"
+        # Create status message with smoothing info
+        smoothed = path_data.get('smoothed', False)
+        if smoothed:
+            message = f"{path_data['name']} with {len(path_data['data'])} points (smoothed)"
+        else:
+            message = f"{path_data['name']} with {len(path_data['data'])} points"
+        
         self.path_info.setText(f"Path: {message}")
         
         # Update waypoints display
@@ -196,7 +222,12 @@ class NeuroSAMWidget(QWidget):
     def on_segmentation_completed(self, path_id, layer_name):
         """Handle when segmentation is completed for a path"""
         path_data = self.state['paths'][path_id]
-        self.path_info.setText(f"Segmentation completed for {path_data['name']}")
+        smoothed = path_data.get('smoothed', False)
+        
+        if smoothed:
+            self.path_info.setText(f"Segmentation completed for {path_data['name']} (smoothed path)")
+        else:
+            self.path_info.setText(f"Segmentation completed for {path_data['name']}")
         
         # Enable spine detection for this path
         self.spine_detection_widget.enable_for_path(path_id)
@@ -204,7 +235,12 @@ class NeuroSAMWidget(QWidget):
     def on_spines_detected(self, path_id, spine_positions):
         """Handle when spines are detected for a path"""
         path_data = self.state['paths'][path_id]
-        self.path_info.setText(f"Detected {len(spine_positions)} spines for {path_data['name']}")
+        smoothed = path_data.get('smoothed', False)
+        
+        if smoothed:
+            self.path_info.setText(f"Detected {len(spine_positions)} spines for {path_data['name']} (smoothed path)")
+        else:
+            self.path_info.setText(f"Detected {len(spine_positions)} spines for {path_data['name']}")
         
         # Store spine positions in state
         self.state['spine_positions'] = spine_positions
@@ -215,6 +251,11 @@ class NeuroSAMWidget(QWidget):
     def on_spine_segmentation_completed(self, path_id, layer_name):
         """Handle when spine segmentation is completed for a path"""
         path_data = self.state['paths'][path_id]
-        self.path_info.setText(f"Spine segmentation completed for {path_data['name']}")
+        smoothed = path_data.get('smoothed', False)
         
-        napari.utils.notifications.show_info(f"Complete workflow finished for {path_data['name']}")
+        if smoothed:
+            self.path_info.setText(f"Spine segmentation completed for {path_data['name']} (smoothed path)")
+            napari.utils.notifications.show_info(f"Complete workflow finished for {path_data['name']} (smoothed)")
+        else:
+            self.path_info.setText(f"Spine segmentation completed for {path_data['name']}")
+            napari.utils.notifications.show_info(f"Complete workflow finished for {path_data['name']}")
