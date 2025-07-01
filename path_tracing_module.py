@@ -534,7 +534,8 @@ class PathTracingWidget(QWidget):
             path_data = self.state['paths'][path_id]
             
             # Check if this path has original clicks stored
-            if 'original_clicks' in path_data:
+            if ('original_clicks' in path_data and 
+                len(path_data['original_clicks']) > 0):
                 # Load the original clicked points
                 self.clicked_points = [np.array(point) for point in path_data['original_clicks']]
                 
@@ -542,6 +543,22 @@ class PathTracingWidget(QWidget):
                 if self.clicked_points:
                     self.state['waypoints_layer'].data = np.array(self.clicked_points)
                     self.waypoints_status.setText(f"Status: {len(self.clicked_points)} points loaded")
+            elif ('original_clicks' in path_data and 
+                  len(path_data['original_clicks']) == 0):
+                # This is a connected path - show a subset of the path points as waypoints
+                path_points = path_data['data']
+                if len(path_points) > 10:
+                    # Take every nth point to get about 10 waypoints
+                    step = len(path_points) // 10
+                    waypoint_indices = range(0, len(path_points), step)
+                    new_waypoints = [path_points[i] for i in waypoint_indices]
+                else:
+                    # Use all points if path is short
+                    new_waypoints = path_points.copy()
+                
+                self.clicked_points = new_waypoints
+                self.state['waypoints_layer'].data = np.array(new_waypoints)
+                self.waypoints_status.setText(f"Status: {len(new_waypoints)} waypoints from connected path")
             else:
                 # Fallback - reconstruct from start, waypoints, and end
                 new_waypoints = []
@@ -568,13 +585,16 @@ class PathTracingWidget(QWidget):
             # Clear any error messages
             self.error_status.setText("")
             
-            # Show smoothing status if path was smoothed
+            # Show path status including type
+            path_type = ""
             if path_data.get('smoothed', False):
-                self.status_label.setText(f"Loaded smoothed path: {path_data['name']}")
-            else:
-                self.status_label.setText(f"Loaded path: {path_data['name']}")
+                path_type = " (smoothed)"
+            elif ('original_clicks' in path_data and 
+                  len(path_data['original_clicks']) == 0):
+                path_type = " (connected)"
             
-            napari.utils.notifications.show_info(f"Loaded {path_data['name']}")
+            self.status_label.setText(f"Loaded path: {path_data['name']}{path_type}")
+            napari.utils.notifications.show_info(f"Loaded {path_data['name']}{path_type}")
         except Exception as e:
             error_msg = f"Error loading path waypoints: {str(e)}"
             napari.utils.notifications.show_info(error_msg)

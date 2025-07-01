@@ -313,7 +313,7 @@ class PathVisualizationWidget(QWidget):
                 layer.visible = visible
                 self.state['paths'][path_id]['visible'] = visible
             
-            # Update traced path visualization
+            # Update traced path visualization only if we have a traced path layer
             if self.image.ndim > 2 and self.state['traced_path_layer'] is not None:
                 if visible:
                     self._update_traced_path_visualization()
@@ -373,6 +373,8 @@ class PathVisualizationWidget(QWidget):
                 is_same_frame = start_point[0] == end_point[0]
                 
             # Import necessary classes
+            import sys
+            sys.path.append('../path_tracing/brightest-path-lib')
             from brightest_path_lib.algorithm import BidirectionalAStarSearch
                 
             # Prepare points format based on 2D or 3D
@@ -456,7 +458,9 @@ class PathVisualizationWidget(QWidget):
                     'end': path2['end'].copy(),
                     'waypoints': combined_waypoints,
                     'visible': True,
-                    'layer': combined_layer
+                    'layer': combined_layer,
+                    'original_clicks': [],  # Empty since this is a generated path
+                    'smoothed': False  # Combined paths are not smoothed
                 }
                 
                 # Store reference to the layer
@@ -465,7 +469,14 @@ class PathVisualizationWidget(QWidget):
                 # Update the path list
                 self.update_path_list()
                 
-                # Select the new path
+                # Update traced path visualization
+                if self.image.ndim > 2 and self.state['traced_path_layer'] is not None:
+                    self._update_traced_path_visualization()
+                
+                # Set the new combined path as the current path
+                self.state['current_path_id'] = path_id
+                
+                # Select the new path in the list
                 for i in range(self.path_list.count()):
                     item = self.path_list.item(i)
                     if item.data(100) == path_id:
@@ -477,12 +488,24 @@ class PathVisualizationWidget(QWidget):
                 napari.utils.notifications.show_info(msg)
                 self.status_label.setText(msg)
                 
-                # Update traced path visualization
-                if self.image.ndim > 2 and self.state['traced_path_layer'] is not None:
-                    self._update_traced_path_visualization()
+                # Import the signal from the path tracing widget to properly notify other modules
+                from qtpy.QtCore import QTimer
                 
-                # Emit signal that new path is selected
-                self.path_selected.emit(path_id)
+                # Emit path_created signal to update other modules
+                def emit_delayed_signal():
+                    # Find the path tracing widget and emit its signal
+                    parent_widget = self.parent()
+                    while parent_widget:
+                        if hasattr(parent_widget, 'path_tracing_widget'):
+                            parent_widget.path_tracing_widget.path_created.emit(path_id, combined_name, combined_path)
+                            break
+                        parent_widget = parent_widget.parent()
+                    
+                    # Also emit our own signal
+                    self.path_selected.emit(path_id)
+                
+                # Use a timer to emit the signal after the UI has updated
+                QTimer.singleShot(100, emit_delayed_signal)
             else:
                 error_msg = f"Could not find a path connecting {path1['name']} to {path2['name']}"
                 napari.utils.notifications.show_info(error_msg)

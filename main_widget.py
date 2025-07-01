@@ -141,7 +141,7 @@ class NeuroSAMWidget(QWidget):
         self.spine_segmentation_widget.spine_segmentation_completed.connect(self.on_spine_segmentation_completed)
     
     def on_path_created(self, path_id, path_name, path_data):
-        """Handle when a new path is created"""
+        """Handle when a new path is created (including connected paths)"""
         self.state['current_path_id'] = path_id
         
         # Get path information including smoothing status
@@ -149,8 +149,13 @@ class NeuroSAMWidget(QWidget):
         num_points = len(path_data)
         smoothed = path_info.get('smoothed', False)
         
-        # Create status message with smoothing info
-        if smoothed:
+        # Check if this is a connected path (no original_clicks)
+        is_connected = 'original_clicks' in path_info and len(path_info['original_clicks']) == 0
+        
+        # Create status message with appropriate info
+        if is_connected:
+            message = f"{path_name}: {num_points} points (connected)"
+        elif smoothed:
             message = f"{path_name}: {num_points} points (smoothed)"
         else:
             message = f"{path_name}: {num_points} points"
@@ -163,8 +168,10 @@ class NeuroSAMWidget(QWidget):
         self.spine_detection_widget.update_path_list()
         self.spine_segmentation_widget.update_path_list()
         
-        # Success notification with smoothing info
-        if smoothed:
+        # Success notification with appropriate info
+        if is_connected:
+            napari.utils.notifications.show_info(f"Connected path created! {num_points} points")
+        elif smoothed:
             napari.utils.notifications.show_info(f"Smoothed path created! {num_points} points")
         else:
             napari.utils.notifications.show_info(f"Path created! {num_points} points")
@@ -194,7 +201,11 @@ class NeuroSAMWidget(QWidget):
         
         # Create status message with smoothing info
         smoothed = path_data.get('smoothed', False)
-        if smoothed:
+        is_connected = 'original_clicks' in path_data and len(path_data['original_clicks']) == 0
+        
+        if is_connected:
+            message = f"{path_data['name']} with {len(path_data['data'])} points (connected)"
+        elif smoothed:
             message = f"{path_data['name']} with {len(path_data['data'])} points (smoothed)"
         else:
             message = f"{path_data['name']} with {len(path_data['data'])} points"
