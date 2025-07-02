@@ -8,6 +8,10 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Signal
 import torch
 from spine_segmentation_model import SpineSegmenter
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from contrasting_color_system import contrasting_color_manager
 
 
 class SpineSegmentationWidget(QWidget):
@@ -40,6 +44,7 @@ class SpineSegmentationWidget(QWidget):
         # Title and instructions
         layout.addWidget(QLabel("<b>Spine Segmentation with SAMv2</b>"))
         layout.addWidget(QLabel("1. Load spine segmentation model\n2. Select a path with detected spines\n3. Run spine segmentation"))
+        layout.addWidget(QLabel("<i>Note: Spines use neon colors that contrast with their dendrite</i>"))
         
         separator1 = QFrame()
         separator1.setFrameShape(QFrame.HLine)
@@ -120,10 +125,22 @@ class SpineSegmentationWidget(QWidget):
         self.run_segmentation_btn.setEnabled(False)
         layout.addWidget(self.run_segmentation_btn)
         
+        # Export button
+        self.export_spine_btn = QPushButton("Export Spine Masks")
+        self.export_spine_btn.setFixedHeight(22)
+        self.export_spine_btn.clicked.connect(self.export_spine_masks)
+        self.export_spine_btn.setEnabled(False)  # Disabled until segmentation exists
+        layout.addWidget(self.export_spine_btn)
+        
         # Progress bar
         self.segmentation_progress = QProgressBar()
         self.segmentation_progress.setValue(0)
         layout.addWidget(self.segmentation_progress)
+        
+        # Color info display
+        self.color_info_label = QLabel("")
+        self.color_info_label.setWordWrap(True)
+        layout.addWidget(self.color_info_label)
         
         # Status and results
         self.results_label = QLabel("Results: No spine segmentation performed yet")
@@ -242,6 +259,15 @@ class SpineSegmentationWidget(QWidget):
                     else:
                         self.status_label.setText(f"Status: Path '{path_name}' selected for spine segmentation")
                     
+                    # Show color info for this path
+                    color_info = contrasting_color_manager.get_pair_info(path_id)
+                    if color_info:
+                        self.color_info_label.setText(
+                            f"Contrasting colors: Dendrite {color_info['dendrite_hex']} -> Spine {color_info['spine_hex']}"
+                        )
+                    else:
+                        self.color_info_label.setText("Note: Segment the dendrite first to assign color pair")
+                    
                     # Enable segmentation button if model is loaded
                     if self.spine_segmenter is not None:
                         self.run_segmentation_btn.setEnabled(True)
@@ -249,6 +275,7 @@ class SpineSegmentationWidget(QWidget):
                 if hasattr(self, 'selected_path_id'):
                     delattr(self, 'selected_path_id')
                 self.run_segmentation_btn.setEnabled(False)
+                self.color_info_label.setText("")
                 
         except Exception as e:
             napari.utils.notifications.show_info(f"Error handling spine segmentation path selection: {str(e)}")
@@ -355,35 +382,69 @@ class SpineSegmentationWidget(QWidget):
                         self.viewer.layers.remove(layer)
                         break
                 
-                # Add new spine segmentation layer
+                # Get the contrasting spine color for this path
+                spine_neon_color = contrasting_color_manager.get_spine_color(path_id)
+                
                 print(f"Adding spine segmentation layer: {spine_seg_layer_name}")
                 print(f"Spine masks shape: {binary_spine_masks.shape}")
                 print(f"Spine masks type: {binary_spine_masks.dtype}")
                 print(f"Spine masks min/max: {binary_spine_masks.min()}/{binary_spine_masks.max()}")
                 print(f"Total segmented pixels: {np.sum(binary_spine_masks)}")
+                print(f"Using contrasting neon color: {spine_neon_color}")
                 
-                spine_segmentation_layer = self.viewer.add_labels(
-                    binary_spine_masks,
+                # Create the spine segmentation layer using add_image with proper colormap
+                # Convert binary masks to float and scale to color range
+                color_spine_masks = binary_spine_masks.astype(np.float32)
+                color_spine_masks[color_spine_masks > 0] = 1.0  # Ensure binary values
+                
+                # Add as image layer
+                spine_segmentation_layer = self.viewer.add_image(
+                    color_spine_masks,
                     name=spine_seg_layer_name,
-                    opacity=0.7,
+                    opacity=0.8,  # Slightly higher opacity for spines
+                    blending='additive',
+                    colormap='viridis'  # Will be overridden
                 )
                 
-                # Set distinct color for spine segmentation
-                spine_segmentation_layer.color = {
-                    1: (1.0, 1.0, 0.0),  # Yellow for spines
-                }
+                # Create custom neon colormap: [transparent, neon_color]
+                custom_neon_cmap = np.array([
+                    [0, 0, 0, 0],  # Transparent for 0 values
+                    [spine_neon_color[0], spine_neon_color[1], spine_neon_color[2], 1]  # Neon color for 1 values
+                ])
+                
+                # Apply the custom neon colormap
+                spine_segmentation_layer.colormap = custom_neon_cmap
+                
+                # Set contrast limits to ensure proper color mapping
+                spine_segmentation_layer.contrast_limits = [0, 1]
+                
+                print(f"Applied custom neon colormap: {custom_neon_cmap}")
+                print(f"Spine layer contrast limits: {spine_segmentation_layer.contrast_limits}")
                 
                 # Store reference in state
                 if 'spine_segmentation_layers' not in self.state:
                     self.state['spine_segmentation_layers'] = {}
                 self.state['spine_segmentation_layers'][path_id] = spine_segmentation_layer
                 
+                # Make sure the layer is visible
+                spine_segmentation_layer.visible = True
+                
+                # Update color info display
+                color_info = contrasting_color_manager.get_pair_info(path_id)
+                if color_info:
+                    self.color_info_label.setText(
+                        f"Contrasting colors: Dendrite {color_info['dendrite_hex']} -> Spine {color_info['spine_hex']}"
+                    )
+                
+                # Enable export button
+                self.export_spine_btn.setEnabled(True)
+                
                 # Update UI
                 total_pixels = np.sum(binary_spine_masks)
                 self.results_label.setText(f"Results: Spine segmentation completed - {total_pixels} pixels segmented")
                 self.status_label.setText(f"Status: Spine segmentation completed for {path_name}")
                 
-                napari.utils.notifications.show_info(f"Spine segmentation completed for {path_name}")
+                napari.utils.notifications.show_info(f"Spine segmentation completed for {path_name} with contrasting neon color")
                 
                 # Emit signal that spine segmentation is completed
                 self.spine_segmentation_completed.emit(path_id, spine_seg_layer_name)
@@ -403,6 +464,79 @@ class SpineSegmentationWidget(QWidget):
         finally:
             self.segmentation_progress.setValue(100)
             self.run_segmentation_btn.setEnabled(True)
+    
+    def export_spine_masks(self):
+        """Export all spine segmentation masks"""
+        from qtpy.QtWidgets import QFileDialog
+        import tifffile
+        import os
+        from datetime import datetime
+        
+        try:
+            # Check if there are any spine segmentation layers to export
+            spine_layers = []
+            for layer in self.viewer.layers:
+                if hasattr(layer, 'name') and 'Spine Segmentation -' in layer.name:
+                    spine_layers.append(layer)
+            
+            if not spine_layers:
+                napari.utils.notifications.show_info("No spine segmentation masks found to export")
+                return
+            
+            # Get directory to save files
+            save_dir = QFileDialog.getExistingDirectory(
+                self, "Select Directory to Save Spine Masks", ""
+            )
+            
+            if not save_dir:
+                return
+            
+            # Create timestamp for this export session
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            exported_count = 0
+            
+            for layer in spine_layers:
+                try:
+                    # Extract path name from layer name
+                    path_name = layer.name.replace("Spine Segmentation - ", "").replace(" ", "_")
+                    
+                    # Get the mask data
+                    mask_data = layer.data
+                    
+                    # Convert to uint8 if needed
+                    if mask_data.dtype != np.uint8:
+                        mask_data = (mask_data > 0).astype(np.uint8) * 255
+                    else:
+                        mask_data = mask_data * 255  # Scale to 0-255 range
+                    
+                    # Create filename
+                    filename = f"spine_mask_{path_name}_{timestamp}.tif"
+                    filepath = os.path.join(save_dir, filename)
+                    
+                    # Save as TIFF
+                    tifffile.imwrite(filepath, mask_data)
+                    
+                    exported_count += 1
+                    print(f"Exported spine mask: {filepath}")
+                    
+                except Exception as e:
+                    print(f"Error exporting mask for {layer.name}: {str(e)}")
+                    continue
+            
+            if exported_count > 0:
+                napari.utils.notifications.show_info(f"Successfully exported {exported_count} spine masks to {save_dir}")
+                self.status_label.setText(f"Status: Exported {exported_count} spine masks")
+            else:
+                napari.utils.notifications.show_info("No spine masks were exported due to errors")
+                
+        except Exception as e:
+            error_msg = f"Error during spine mask export: {str(e)}"
+            napari.utils.notifications.show_info(error_msg)
+            self.status_label.setText(f"Status: {error_msg}")
+            print(f"Export error details: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def enable_for_path(self, path_id):
         """Enable spine segmentation for a specific path"""

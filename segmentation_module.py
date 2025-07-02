@@ -7,6 +7,10 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import Signal
 from segmentation_model import DendriteSegmenter
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from contrasting_color_system import contrasting_color_manager
 
 
 class SegmentationWidget(QWidget):
@@ -51,6 +55,7 @@ class SegmentationWidget(QWidget):
         # Model settings
         layout.addWidget(QLabel("<b>Dendrite Segmentation</b>"))
         layout.addWidget(QLabel("1. Load Segmentation Model\n2. Choose the path you want to segment\n3. Click on Run Segmentation to Segment"))
+        layout.addWidget(QLabel("<i>Note: Each dendrite gets a unique color with contrasting spine colors</i>"))
         
         # Model paths
         model_section = QWidget()
@@ -130,10 +135,22 @@ class SegmentationWidget(QWidget):
         self.run_segmentation_btn.setEnabled(False)  # Disabled until model is loaded
         layout.addWidget(self.run_segmentation_btn)
         
+        # Export button
+        self.export_dendrite_btn = QPushButton("Export Dendrite Masks")
+        self.export_dendrite_btn.setFixedHeight(22)
+        self.export_dendrite_btn.clicked.connect(self.export_dendrite_masks)
+        self.export_dendrite_btn.setEnabled(False)  # Disabled until segmentation exists
+        layout.addWidget(self.export_dendrite_btn)
+        
         # Progress bar
         self.segmentation_progress = QProgressBar()
         self.segmentation_progress.setValue(0)
         layout.addWidget(self.segmentation_progress)
+        
+        # Color info display
+        self.color_info_label = QLabel("")
+        self.color_info_label.setWordWrap(True)
+        layout.addWidget(self.color_info_label)
         
         # Status message
         self.status_label = QLabel("Status: Model not loaded")
@@ -187,6 +204,15 @@ class SegmentationWidget(QWidget):
                     path_name = self.state['paths'][path_id]['name']
                     self.status_label.setText(f"Status: Path '{path_name}' selected for segmentation")
                     
+                    # Show color info if this path has an assigned color pair
+                    color_info = contrasting_color_manager.get_pair_info(path_id)
+                    if color_info:
+                        self.color_info_label.setText(
+                            f"Colors: Dendrite {color_info['dendrite_hex']} -> Spine {color_info['spine_hex']}"
+                        )
+                    else:
+                        self.color_info_label.setText("Colors: Will be assigned during segmentation")
+                    
                     # Enable the segmentation button if the model is loaded
                     if self.segmenter is not None:
                         self.run_segmentation_btn.setEnabled(True)
@@ -195,6 +221,7 @@ class SegmentationWidget(QWidget):
                 if hasattr(self, 'selected_path_id'):
                     delattr(self, 'selected_path_id')
                 self.run_segmentation_btn.setEnabled(False)
+                self.color_info_label.setText("")
         except Exception as e:
             napari.utils.notifications.show_info(f"Error handling segmentation path selection: {str(e)}")
         finally:
@@ -321,35 +348,62 @@ class SegmentationWidget(QWidget):
                     print(f"Removing existing segmentation layer: {seg_layer_name}")
                     self.viewer.layers.remove(existing_layer)
                 
-                # Add the new segmentation layer with distinct appearance
+                # Get the dendrite color from the contrasting color manager
+                dendrite_color = contrasting_color_manager.get_dendrite_color(path_id)
+                
                 print(f"Adding new segmentation layer: {seg_layer_name}")
                 print(f"Result masks shape: {binary_masks.shape}")
                 print(f"Result masks type: {binary_masks.dtype}")
                 print(f"Result masks min/max: {binary_masks.min()}/{binary_masks.max()}")
+                print(f"Using dendrite color: {dendrite_color}")
                 
-                # Add segmentation as labels instead of image for better visualization
-                segmentation_layer = self.viewer.add_labels(
-                    binary_masks,
+                # Create the segmentation layer using add_image with proper colormap
+                # Convert binary masks to float and scale to color range
+                color_masks = binary_masks.astype(np.float32)
+                color_masks[color_masks > 0] = 1.0  # Ensure binary values
+                
+                # Add as image layer
+                segmentation_layer = self.viewer.add_image(
+                    color_masks,
                     name=seg_layer_name,
-                    opacity=0.6,
+                    opacity=0.7,
+                    blending='additive',
+                    colormap='viridis'  # Will be overridden
                 )
-
-                segmentation_layer.color = {
-                    1: (1.0, 0.0, 1.0),  # magenta
-                }
+                
+                # Create custom colormap: [transparent, dendrite_color]
+                custom_cmap = np.array([
+                    [0, 0, 0, 0],  # Transparent for 0 values
+                    [dendrite_color[0], dendrite_color[1], dendrite_color[2], 1]  # Color for 1 values
+                ])
+                
+                # Apply the custom colormap
+                segmentation_layer.colormap = custom_cmap
+                
+                # Set contrast limits to ensure proper color mapping
+                segmentation_layer.contrast_limits = [0, 1]
+                
+                print(f"Applied custom colormap: {custom_cmap}")
+                print(f"Layer contrast limits: {segmentation_layer.contrast_limits}")
                 
                 # Store reference in state
                 self.state['segmentation_layer'] = segmentation_layer
                 
                 # Make sure the layer is visible
-                if self.state['segmentation_layer'] in self.viewer.layers:
-                    self.state['segmentation_layer'].visible = True
+                segmentation_layer.visible = True
                 
-                # Update the viewer to refresh display
-                self.viewer.reset_view()
+                # Update color info display
+                color_info = contrasting_color_manager.get_pair_info(path_id)
+                if color_info:
+                    self.color_info_label.setText(
+                        f"Colors: Dendrite {color_info['dendrite_hex']} -> Spine {color_info['spine_hex']}"
+                    )
+                
+                # Enable export button
+                self.export_dendrite_btn.setEnabled(True)
                 
                 self.status_label.setText(f"Status: Segmentation complete for {path_name}")
-                napari.utils.notifications.show_info(f"Segmentation complete for {path_name}")
+                napari.utils.notifications.show_info(f"Segmentation complete for {path_name} with contrasting color pair")
                 
                 # Emit signal that segmentation is completed
                 self.segmentation_completed.emit(path_id, seg_layer_name)
@@ -367,3 +421,76 @@ class SegmentationWidget(QWidget):
         finally:
             self.segmentation_progress.setValue(100)
             self.run_segmentation_btn.setEnabled(True)
+    
+    def export_dendrite_masks(self):
+        """Export all dendrite segmentation masks"""
+        from qtpy.QtWidgets import QFileDialog
+        import tifffile
+        import os
+        from datetime import datetime
+        
+        try:
+            # Check if there are any segmentation layers to export
+            dendrite_layers = []
+            for layer in self.viewer.layers:
+                if hasattr(layer, 'name') and 'Segmentation -' in layer.name:
+                    dendrite_layers.append(layer)
+            
+            if not dendrite_layers:
+                napari.utils.notifications.show_info("No dendrite segmentation masks found to export")
+                return
+            
+            # Get directory to save files
+            save_dir = QFileDialog.getExistingDirectory(
+                self, "Select Directory to Save Dendrite Masks", ""
+            )
+            
+            if not save_dir:
+                return
+            
+            # Create timestamp for this export session
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            exported_count = 0
+            
+            for layer in dendrite_layers:
+                try:
+                    # Extract path name from layer name
+                    path_name = layer.name.replace("Segmentation - ", "").replace(" ", "_")
+                    
+                    # Get the mask data
+                    mask_data = layer.data
+                    
+                    # Convert to uint8 if needed
+                    if mask_data.dtype != np.uint8:
+                        mask_data = (mask_data > 0).astype(np.uint8) * 255
+                    else:
+                        mask_data = mask_data * 255  # Scale to 0-255 range
+                    
+                    # Create filename
+                    filename = f"dendrite_mask_{path_name}_{timestamp}.tif"
+                    filepath = os.path.join(save_dir, filename)
+                    
+                    # Save as TIFF
+                    tifffile.imwrite(filepath, mask_data)
+                    
+                    exported_count += 1
+                    print(f"Exported dendrite mask: {filepath}")
+                    
+                except Exception as e:
+                    print(f"Error exporting mask for {layer.name}: {str(e)}")
+                    continue
+            
+            if exported_count > 0:
+                napari.utils.notifications.show_info(f"Successfully exported {exported_count} dendrite masks to {save_dir}")
+                self.status_label.setText(f"Status: Exported {exported_count} dendrite masks")
+            else:
+                napari.utils.notifications.show_info("No dendrite masks were exported due to errors")
+                
+        except Exception as e:
+            error_msg = f"Error during dendrite mask export: {str(e)}"
+            napari.utils.notifications.show_info(error_msg)
+            self.status_label.setText(f"Status: {error_msg}")
+            print(f"Export error details: {str(e)}")
+            import traceback
+            traceback.print_exc()
