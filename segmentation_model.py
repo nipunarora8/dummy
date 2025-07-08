@@ -79,10 +79,8 @@ class DendriteSegmenter:
         image_rgb = cv2.merge([img, img, img]).astype(np.float32)
         
         # Prepare points and labels
-        # points = np.array(positive_points + negative_points, dtype=np.float32)
-        # labels = np.array([1] * len(positive_points) + [0] * len(negative_points), dtype=np.int32)
-        points = np.array(positive_points, dtype=np.float32)
-        labels = np.array([1] * len(positive_points), dtype=np.int32)
+        points = np.array(positive_points + negative_points, dtype=np.float32)
+        labels = np.array([1] * len(positive_points) + [0] * len(negative_points), dtype=np.int32)
         
         # Run prediction
         try:

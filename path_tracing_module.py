@@ -8,7 +8,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Signal
 import sys
 sys.path.append('../path_tracing/brightest-path-lib')
-from brightest_path_lib.algorithm import EnhancedWaypointAStarSearch
+from brightest_path_lib.algorithm.waypointastar_speedup import quick_accurate_optimized_search
 from scipy.interpolate import splprep, splev
 
 
@@ -84,7 +84,7 @@ class PathSmoother:
 
 
 class PathTracingWidget(QWidget):
-    """Widget for tracing the brightest path with enhanced algorithm backend and B-spline smoothing."""
+    """Widget for tracing the brightest path with fast waypoint A* algorithm and B-spline smoothing."""
     
     # Define signals
     path_created = Signal(str, str, object)  # path_id, path_name, path_data
@@ -120,18 +120,18 @@ class PathTracingWidget(QWidget):
         # Initialize path smoother
         self.path_smoother = PathSmoother()
         
-        # Setup UI (keeping original interface)
+        # Setup UI
         self.setup_ui()
     
     def setup_ui(self):
-        """Create the UI panel with controls (original interface + smoothing)"""
+        """Create the UI panel with controls"""
         layout = QVBoxLayout()
         layout.setSpacing(2)
         layout.setContentsMargins(2, 2, 2, 2)
         self.setLayout(layout)
         
         # Main instruction
-        title = QLabel("<b>Path Tracing</b>")
+        title = QLabel("<b>Fast Path Tracing with Parallel Processing</b>")
         layout.addWidget(title)
         
         # Instructions section
@@ -144,7 +144,7 @@ class PathTracingWidget(QWidget):
         instructions = QLabel(
             "Instructions:\n"
             "1. Click points on the dendrite structure\n"
-            "2. Click 'Find Path' to trace the brightest path\n"
+            "2. Click 'Find Path' to trace using fast algorithm\n"
             "3. Use 'Trace Another Path' for additional paths"
         )
         instructions.setWordWrap(True)
@@ -173,6 +173,21 @@ class PathTracingWidget(QWidget):
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
+        
+        # Fast algorithm settings
+        algorithm_section = QWidget()
+        algorithm_layout = QVBoxLayout()
+        algorithm_layout.setSpacing(2)
+        algorithm_layout.setContentsMargins(2, 2, 2, 2)
+        algorithm_section.setLayout(algorithm_layout)
+        
+        # Parallel processing checkbox
+        self.enable_parallel_cb = QCheckBox("Enable Parallel Processing")
+        self.enable_parallel_cb.setChecked(True)
+        self.enable_parallel_cb.setToolTip("Use parallel processing for faster pathfinding")
+        algorithm_layout.addWidget(self.enable_parallel_cb)
+        
+        layout.addWidget(algorithm_section)
         
         # Smoothing controls section
         smoothing_section = QWidget()
@@ -211,8 +226,8 @@ class PathTracingWidget(QWidget):
         buttons_layout = QVBoxLayout()
         buttons_layout.setSpacing(2)
         
-        # Main path finding button (same as before)
-        self.find_path_btn = QPushButton("Find Path")
+        # Main path finding button
+        self.find_path_btn = QPushButton("Find Path (Fast Algorithm)")
         self.find_path_btn.setFixedHeight(26)
         self.find_path_btn.setStyleSheet("font-weight: bold; background-color: #4CAF50; color: white;")
         self.find_path_btn.clicked.connect(self.find_path)
@@ -302,7 +317,7 @@ class PathTracingWidget(QWidget):
                 self.find_path_btn.setEnabled(num_points >= 2)
                 
                 if num_points >= 2:
-                    self.status_label.setText("Ready to find path!")
+                    self.status_label.setText("Ready to find path using fast algorithm!")
                 else:
                     self.status_label.setText(f"Need at least 2 points (currently have {num_points})")
             else:
@@ -317,7 +332,7 @@ class PathTracingWidget(QWidget):
             self.handling_event = False
     
     def find_path(self):
-        """Find path using the enhanced algorithm with optional smoothing"""
+        """Find path using the fast waypoint A* algorithm with optional smoothing"""
         if self.handling_event:
             return
             
@@ -331,28 +346,26 @@ class PathTracingWidget(QWidget):
             
             # Clear any previous error messages
             self.error_status.setText("")
-            self.status_label.setText("Finding path...")
+            self.status_label.setText("Finding path using fast algorithm...")
             
             # Convert clicked points to the format expected by the algorithm
             points_list = [point.tolist() for point in self.clicked_points]
             
-            napari.utils.notifications.show_info("Finding brightest path...")
+            # Get algorithm settings
+            enable_parallel = self.enable_parallel_cb.isChecked()
             
-            # Use enhanced algorithm in backend
-            search = EnhancedWaypointAStarSearch(
+            napari.utils.notifications.show_info("Finding brightest path with fast algorithm...")
+            
+            # Use the fast waypoint A* algorithm
+            path = quick_accurate_optimized_search(
                 image=self.image,
                 points_list=points_list,
-                intensity_threshold=0.3,
-                auto_z_detection=True,
-                waypoint_z_optimization=True,
-                verbose=True
+                verbose=True,
+                enable_parallel=enable_parallel
             )
             
-            # Run the search
-            path, start_point, goal_point, processed_waypoints = search.search()
-            
             # Check if path was found
-            if search.found_path and len(path) > 0:
+            if path is not None and len(path) > 0:
                 # Convert path to numpy array
                 path_data = np.array(path)
                 
@@ -397,27 +410,30 @@ class PathTracingWidget(QWidget):
                 # Generate a unique ID for this path
                 path_id = str(uuid.uuid4())
                 
-                # Store the path (enhanced backend data but simplified frontend)
+                # Store the path with enhanced metadata
                 self.state['paths'][path_id] = {
                     'name': path_name,
                     'data': path_data,
-                    'start': start_point.copy(),
-                    'end': goal_point.copy(),
-                    'waypoints': [wp.copy() for wp in processed_waypoints] if processed_waypoints else [],
+                    'start': self.clicked_points[0].copy(),
+                    'end': self.clicked_points[-1].copy(),
+                    'waypoints': [point.copy() for point in self.clicked_points[1:-1]] if len(self.clicked_points) > 2 else [],
                     'visible': True,
                     'layer': path_layer,
                     'original_clicks': [point.copy() for point in self.clicked_points],
-                    'smoothed': self.enable_smoothing_cb.isChecked() and smoothing_factor > 0
+                    'smoothed': self.enable_smoothing_cb.isChecked() and self.smoothing_factor_spin.value() > 0,
+                    'algorithm': 'fast_waypoint_astar',
+                    'parallel_processing': enable_parallel
                 }
                 
                 # Store reference to the layer
                 self.state['path_layers'][path_id] = path_layer
                 
                 # Update UI
+                algorithm_info = " (parallel)" if enable_parallel else " (sequential)"
                 smoothing_msg = " (smoothed)" if self.state['paths'][path_id]['smoothed'] else ""
-                msg = f"Path found: {len(path_data)} points{smoothing_msg}"
+                msg = f"Fast path found: {len(path_data)} points{algorithm_info}{smoothing_msg}"
                 napari.utils.notifications.show_info(msg)
-                self.status_label.setText(f"Success: {path_name} created{smoothing_msg}")
+                self.status_label.setText(f"Success: {path_name} created with fast algorithm{smoothing_msg}")
                 
                 # Enable trace another path button
                 self.trace_another_btn.setEnabled(True)
@@ -430,16 +446,16 @@ class PathTracingWidget(QWidget):
                     
             else:
                 # No path found
-                msg = "Could not find a path"
+                msg = "Could not find a path with fast algorithm"
                 napari.utils.notifications.show_info(msg)
                 self.error_status.setText("Error: No path found")
-                self.status_label.setText("Try selecting different points")
+                self.status_label.setText("Try selecting different points or adjusting parameters")
                 
         except Exception as e:
-            msg = f"Error in path finding: {e}"
+            msg = f"Error in fast path finding: {e}"
             napari.utils.notifications.show_info(msg)
             self.error_status.setText(f"Error: {str(e)}")
-            print(f"Path finding error: {str(e)}")
+            print(f"Fast path finding error: {str(e)}")
             import traceback
             traceback.print_exc()
         finally:
@@ -585,9 +601,16 @@ class PathTracingWidget(QWidget):
             # Clear any error messages
             self.error_status.setText("")
             
-            # Show path status including type
+            # Show path status including algorithm type
             path_type = ""
-            if path_data.get('smoothed', False):
+            if path_data.get('algorithm') == 'fast_waypoint_astar':
+                path_type = " (fast algorithm"
+                if path_data.get('parallel_processing', False):
+                    path_type += ", parallel"
+                path_type += ")"
+                if path_data.get('smoothed', False):
+                    path_type += " (smoothed)"
+            elif path_data.get('smoothed', False):
                 path_type = " (smoothed)"
             elif ('original_clicks' in path_data and 
                   len(path_data['original_clicks']) == 0):
