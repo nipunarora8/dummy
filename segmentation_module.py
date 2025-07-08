@@ -38,12 +38,23 @@ class SegmentationWidget(QWidget):
         
         # Initialize the segmentation model (don't load it yet)
         self.segmenter = None
+
+        self.xy_spacing_nm = self.state.get('xy_spacing_nm', 94.0)
+        self.z_spacing_nm = self.state.get('z_spacing_nm', 500.0)
         
         # Flag to prevent recursive event handling
         self.handling_event = False
         
         # Setup UI
         self.setup_ui()
+
+    def update_spacing(self, new_xy_spacing, new_z_spacing):
+        """Update spacing for segmentation module"""
+        self.xy_spacing_nm = new_xy_spacing
+        self.z_spacing_nm = new_z_spacing
+        z_scale = new_z_spacing / new_xy_spacing
+        print(f"Segmentation: Updated to XY={new_xy_spacing:.1f} nm/pixel, Z={new_z_spacing:.1f} nm/slice")
+        print(f"  3D scale ratio (Z/XY): {z_scale:.2f}")
     
     def setup_ui(self):
         """Create the UI panel with controls"""

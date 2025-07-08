@@ -174,6 +174,51 @@ class PathTracingWidget(QWidget):
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
         
+        # Pixel spacing configuration section
+        spacing_section = QWidget()
+        spacing_layout = QVBoxLayout()
+        spacing_layout.setSpacing(2)
+        spacing_layout.setContentsMargins(2, 2, 2, 2)
+        spacing_section.setLayout(spacing_layout)
+        
+        spacing_layout.addWidget(QLabel("<b>Pixel Spacing Configuration</b>"))
+        
+        # XY pixel spacing input
+        xy_spacing_layout = QHBoxLayout()
+        xy_spacing_layout.setSpacing(2)
+        xy_spacing_layout.addWidget(QLabel("XY spacing:"))
+        self.xy_spacing_spin = QDoubleSpinBox()
+        self.xy_spacing_spin.setRange(1.0, 10000.0)
+        self.xy_spacing_spin.setSingleStep(1.0)
+        self.xy_spacing_spin.setValue(94.0)  # Default 94 nm/pixel
+        self.xy_spacing_spin.setDecimals(1)
+        self.xy_spacing_spin.setSuffix(" nm/pixel")
+        self.xy_spacing_spin.setToolTip("XY pixel spacing in nanometers per pixel")
+        xy_spacing_layout.addWidget(self.xy_spacing_spin)
+        spacing_layout.addLayout(xy_spacing_layout)
+        
+        # Z pixel spacing input
+        z_spacing_layout = QHBoxLayout()
+        z_spacing_layout.setSpacing(2)
+        z_spacing_layout.addWidget(QLabel("Z spacing:"))
+        self.z_spacing_spin = QDoubleSpinBox()
+        self.z_spacing_spin.setRange(1.0, 10000.0)
+        self.z_spacing_spin.setSingleStep(1.0)
+        self.z_spacing_spin.setValue(500.0)  # Default 500 nm/slice
+        self.z_spacing_spin.setDecimals(1)
+        self.z_spacing_spin.setSuffix(" nm/slice")
+        self.z_spacing_spin.setToolTip("Z slice spacing in nanometers per slice")
+        z_spacing_layout.addWidget(self.z_spacing_spin)
+        spacing_layout.addLayout(z_spacing_layout)
+        
+        # Info label
+        spacing_info = QLabel("XY: in-plane pixel spacing, Z: between-slice spacing. Used for 3D view scaling and distance measurements.")
+        spacing_info.setWordWrap(True)
+        spacing_info.setStyleSheet("color: #666; font-size: 9px;")
+        spacing_layout.addWidget(spacing_info)
+        
+        layout.addWidget(spacing_section)
+        
         # Fast algorithm settings
         algorithm_section = QWidget()
         algorithm_layout = QVBoxLayout()
@@ -394,13 +439,17 @@ class PathTracingWidget(QWidget):
                 # Get color for this path
                 path_color = self.get_next_color()
                 
-                # Create a new layer for this path
+                # Calculate current scaling for consistent layer scaling
+                z_scale = self.state['z_spacing_nm'] / self.state['xy_spacing_nm']
+                
+                # Create a new layer for this path with proper scaling
                 path_layer = self.viewer.add_points(
                     path_data,
                     name=path_name,
                     size=3,
                     face_color=path_color,
-                    opacity=0.8
+                    opacity=0.8,
+                    scale=(z_scale, 1.0, 1.0)  # Apply same scaling as other layers
                 )
                 
                 # Update 3D visualization if applicable
@@ -410,7 +459,7 @@ class PathTracingWidget(QWidget):
                 # Generate a unique ID for this path
                 path_id = str(uuid.uuid4())
                 
-                # Store the path with enhanced metadata
+                # Store the path with enhanced metadata including spacing
                 self.state['paths'][path_id] = {
                     'name': path_name,
                     'data': path_data,
@@ -422,7 +471,9 @@ class PathTracingWidget(QWidget):
                     'original_clicks': [point.copy() for point in self.clicked_points],
                     'smoothed': self.enable_smoothing_cb.isChecked() and self.smoothing_factor_spin.value() > 0,
                     'algorithm': 'fast_waypoint_astar',
-                    'parallel_processing': enable_parallel
+                    'parallel_processing': enable_parallel,
+                    'xy_spacing_nm': self.xy_spacing_spin.value(),  # Store XY spacing with path
+                    'z_spacing_nm': self.z_spacing_spin.value()     # Store Z spacing with path
                 }
                 
                 # Store reference to the layer
