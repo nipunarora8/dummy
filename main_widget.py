@@ -15,15 +15,7 @@ class NeuroSAMWidget(QWidget):
     """Main widget for the NeuroSAM napari plugin with fast waypoint A* and optimized tube data generation."""
     
     def __init__(self, viewer, image):
-        """Initialize the main widget.
-        
-        Parameters:
-        -----------
-        viewer : napari.Viewer
-            The napari viewer instance
-        image : numpy.ndarray
-            3D or higher-dimensional image data
-        """
+        """Initialize the main widget WITHOUT Z-scaling that breaks coordinates"""
         super().__init__()
         self.viewer = viewer
         self.image = image
@@ -44,30 +36,37 @@ class NeuroSAMWidget(QWidget):
             'z_spacing_nm': 500.0,    # Global Z slice spacing in nm/slice (default)
         }
         
-        # Now initialize the image layer with proper 3D scaling
-        z_scale = self.state['z_spacing_nm'] / self.state['xy_spacing_nm']  # Calculate Z scale factor
+        # CRITICAL FIX: Add image layer WITHOUT any scaling to preserve frame count
         self.image_layer = self.viewer.add_image(
             self.image, 
             name='Image', 
-            colormap='gray',
-            scale=(z_scale, 1.0, 1.0)  # Apply anisotropic scaling (Z, Y, X)
+            colormap='gray'
+            # NO SCALE parameter - this prevents frame interpolation
         )
+        
+        print(f"FRAME COUNT CHECK:")
+        print(f"Original image shape: {self.image.shape}")
+        print(f"Image layer data shape: {self.image_layer.data.shape}")
+        print(f"Viewer dims range: {self.viewer.dims.range}")
+        
+        # Verify frame count is preserved
+        if self.image.shape[0] != self.image_layer.data.shape[0]:
+            raise ValueError(f"FRAME COUNT MISMATCH! Original: {self.image.shape[0]}, Napari: {self.image_layer.data.shape[0]}")
         
         # Setup UI
         self.setup_ui()
         
-        # Initialize the waypoints layer with same scaling as image
-        z_scale = self.state['z_spacing_nm'] / self.state['xy_spacing_nm']
+        # Initialize the waypoints layer WITHOUT scaling
         self.state['waypoints_layer'] = self.viewer.add_points(
             np.empty((0, self.image.ndim)),
             name='Point Selection',
             size=15,
             face_color='cyan',
-            symbol='x',
-            scale=(z_scale, 1.0, 1.0)  # Same scaling as image
+            symbol='x'
+            # NO SCALE - keep in original pixel coordinates
         )
         
-        # Initialize 3D traced path layer if applicable with same scaling
+        # Initialize 3D traced path layer WITHOUT scaling
         if self.image.ndim > 2:
             self.state['traced_path_layer'] = self.viewer.add_points(
                 np.empty((0, self.image.ndim)),
@@ -75,11 +74,11 @@ class NeuroSAMWidget(QWidget):
                 size=4,
                 face_color='magenta',
                 opacity=0.7,
-                visible=False,
-                scale=(z_scale, 1.0, 1.0)  # Same scaling as image
+                visible=False
+                # NO SCALE - keep in original pixel coordinates
             )
         
-        # Initialize modules with optimized algorithms
+        # Initialize modules
         self.path_tracing_widget = PathTracingWidget(self.viewer, self.image, self.state)
         self.segmentation_widget = SegmentationWidget(self.viewer, self.image, self.state)
         self.spine_detection_widget = SpineDetectionWidget(self.viewer, self.image, self.state)
@@ -108,8 +107,35 @@ class NeuroSAMWidget(QWidget):
         
         # Activate the waypoints layer to begin workflow
         self.viewer.layers.selection.active = self.state['waypoints_layer']
-        napari.utils.notifications.show_info("Fast Path Tracing ready. Click points on the dendrite structure.")
+        napari.utils.notifications.show_info("Path Tracing ready. Frame count preserved - click points on the dendrite structure.")
 
+
+
+    def on_xy_spacing_changed(self, new_xy_spacing):
+        """Handle when XY spacing is changed - NO MORE SCALING UPDATES"""
+        self.state['xy_spacing_nm'] = new_xy_spacing
+        
+        # Update all modules with new XY spacing
+        self.segmentation_widget.update_spacing(new_xy_spacing, self.state['z_spacing_nm'])
+        self.spine_detection_widget.update_spacing(new_xy_spacing, self.state['z_spacing_nm'])
+        self.spine_segmentation_widget.update_spacing(new_xy_spacing, self.state['z_spacing_nm'])
+        
+        print(f"Updated XY spacing to {new_xy_spacing:.1f} nm/pixel")
+        print(f"NOTE: No layer scaling applied - coordinates preserved")
+    
+    def on_z_spacing_changed(self, new_z_spacing):
+        """Handle when Z spacing is changed - NO MORE SCALING UPDATES"""
+        self.state['z_spacing_nm'] = new_z_spacing
+        
+        # Update all modules with new Z spacing
+        self.segmentation_widget.update_spacing(self.state['xy_spacing_nm'], new_z_spacing)
+        self.spine_detection_widget.update_spacing(self.state['xy_spacing_nm'], new_z_spacing)
+        self.spine_segmentation_widget.update_spacing(self.state['xy_spacing_nm'], new_z_spacing)
+        
+        print(f"Updated Z spacing to {new_z_spacing:.1f} nm/slice")
+        print(f"NOTE: No layer scaling applied - coordinates preserved")
+
+        
     def setup_ui(self):
         """Create the UI panel with controls"""
         layout = QVBoxLayout()

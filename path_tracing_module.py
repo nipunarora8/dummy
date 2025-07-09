@@ -395,16 +395,52 @@ class PathTracingWidget(QWidget):
             
             # Convert clicked points to the format expected by the algorithm
             points_list = [point.tolist() for point in self.clicked_points]
+
+            # ADD THESE DEBUG PRINTS:
+            print("=== NAPARI PATH TRACING DEBUG ===")
+            print(f"Image shape: {self.image.shape}")
+            print(f"Clicked points (raw): {self.clicked_points}")
+            print(f"Points list sent to algorithm: {points_list}")
+            print(f"XY spacing: {self.xy_spacing_spin.value()}")
+            print(f"Z spacing: {self.z_spacing_spin.value()}")
+            print(f"Enable parallel: {self.enable_parallel_cb.isChecked()}")
+            
+            # Check if points are within image bounds
+            for i, point in enumerate(points_list):
+                z, y, x = point[0], point[1], point[2]
+                in_bounds = (0 <= z < self.image.shape[0] and 
+                            0 <= y < self.image.shape[1] and 
+                            0 <= x < self.image.shape[2])
+                print(f"Point {i}: {point} - In bounds: {in_bounds}")
+            
+            # Check image statistics at clicked points
+            for i, point in enumerate(points_list):
+                if len(point) >= 3:
+                    z, y, x = int(point[0]), int(point[1]), int(point[2])
+                    if (0 <= z < self.image.shape[0] and 
+                        0 <= y < self.image.shape[1] and 
+                        0 <= x < self.image.shape[2]):
+                        intensity = self.image[z, y, x]
+                        print(f"Point {i} intensity: {intensity}")
+            
+            print("=====================================")
             
             # Get algorithm settings
             enable_parallel = self.enable_parallel_cb.isChecked()
             
+            # Get current spacing values
+            xy_spacing_nm = self.xy_spacing_spin.value()
+            z_spacing_nm = self.z_spacing_spin.value()
+            
             napari.utils.notifications.show_info("Finding brightest path with fast algorithm...")
             
-            # Use the fast waypoint A* algorithm
+            # Use the fast waypoint A* algorithm WITH NANOMETER SUPPORT
             path = quick_accurate_optimized_search(
                 image=self.image,
                 points_list=points_list,
+                xy_spacing_nm=xy_spacing_nm,        # Pass XY spacing
+                z_spacing_nm=z_spacing_nm,          # Pass Z spacing
+                my_weight_heuristic=2.0,            # Always optimal for medical accuracy
                 verbose=True,
                 enable_parallel=enable_parallel
             )
@@ -470,17 +506,17 @@ class PathTracingWidget(QWidget):
                     'layer': path_layer,
                     'original_clicks': [point.copy() for point in self.clicked_points],
                     'smoothed': self.enable_smoothing_cb.isChecked() and self.smoothing_factor_spin.value() > 0,
-                    'algorithm': 'fast_waypoint_astar',
+                    'algorithm': 'fast_waypoint_astar_nm',  # Updated to indicate nanometer support
                     'parallel_processing': enable_parallel,
-                    'xy_spacing_nm': self.xy_spacing_spin.value(),  # Store XY spacing with path
-                    'z_spacing_nm': self.z_spacing_spin.value()     # Store Z spacing with path
+                    'xy_spacing_nm': xy_spacing_nm,    # Store XY spacing with path
+                    'z_spacing_nm': z_spacing_nm       # Store Z spacing with path
                 }
                 
                 # Store reference to the layer
                 self.state['path_layers'][path_id] = path_layer
                 
                 # Update UI
-                algorithm_info = " (parallel)" if enable_parallel else " (sequential)"
+                algorithm_info = " (parallel, nanometer-aware)" if enable_parallel else " (sequential, nanometer-aware)"
                 smoothing_msg = " (smoothed)" if self.state['paths'][path_id]['smoothed'] else ""
                 msg = f"Fast path found: {len(path_data)} points{algorithm_info}{smoothing_msg}"
                 napari.utils.notifications.show_info(msg)
@@ -511,7 +547,7 @@ class PathTracingWidget(QWidget):
             traceback.print_exc()
         finally:
             self.handling_event = False
-    
+
     def _update_traced_path_visualization(self, path):
         """Update the 3D traced path visualization"""
         if self.state['traced_path_layer'] is None:

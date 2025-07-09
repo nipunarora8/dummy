@@ -368,34 +368,27 @@ class SegmentationWidget(QWidget):
                 print(f"Result masks min/max: {binary_masks.min()}/{binary_masks.max()}")
                 print(f"Using dendrite color: {dendrite_color}")
                 
-                # Create the segmentation layer using add_image with proper colormap
-                # Convert binary masks to float and scale to color range
-                color_masks = binary_masks.astype(np.float32)
-                color_masks[color_masks > 0] = 1.0  # Ensure binary values
+                # Calculate current scaling for consistent layer scaling
+                z_scale = self.state['z_spacing_nm'] / self.state['xy_spacing_nm']
                 
-                # Add as image layer
-                segmentation_layer = self.viewer.add_image(
-                    color_masks,
+                # FIXED: Add segmentation layer without anisotropic scaling first
+                # The segmentation model works in pixel coordinates, so we add it normally
+                segmentation_layer = self.viewer.add_labels(
+                    binary_masks,
                     name=seg_layer_name,
                     opacity=0.7,
-                    blending='additive',
-                    colormap='viridis'  # Will be overridden
+                    blending='additive'
                 )
                 
+                # THEN apply the scaling to match other layers
+                segmentation_layer.scale = (z_scale, 1.0, 1.0)
+                
                 # Create custom colormap: [transparent, dendrite_color]
-                custom_cmap = np.array([
-                    [0, 0, 0, 0],  # Transparent for 0 values
-                    [dendrite_color[0], dendrite_color[1], dendrite_color[2], 1]  # Color for 1 values
-                ])
+                # For labels layer, we need to set the color in the colormap
+                segmentation_layer.color = {1: dendrite_color}
                 
-                # Apply the custom colormap
-                segmentation_layer.colormap = custom_cmap
-                
-                # Set contrast limits to ensure proper color mapping
-                segmentation_layer.contrast_limits = [0, 1]
-                
-                print(f"Applied custom colormap: {custom_cmap}")
-                print(f"Layer contrast limits: {segmentation_layer.contrast_limits}")
+                print(f"Applied scaling: {segmentation_layer.scale}")
+                print(f"Applied color: {dendrite_color}")
                 
                 # Store reference in state
                 self.state['segmentation_layer'] = segmentation_layer
