@@ -130,34 +130,6 @@ def run_neuro_sam(image=None, image_path=None):
         mid_slice = image.shape[0] // 2
         viewer.dims.set_point(0, mid_slice)
     
-    print("\n===== NEURO-SAM: FAST DENDRITE PATH TRACING & OPTIMIZED SPINE DETECTION =====")
-    print("🚀 NEW FEATURES:")
-    print("   • Fast Waypoint A* Algorithm with Parallel Processing")
-    print("   • Optimized Tube Data Generation with Numba JIT")
-    print("   • B-spline Path Smoothing")
-    print("   • Contrasting Color System for Dendrites & Spines")
-    print("")
-    print("📋 WORKFLOW:")
-    print("1. Set pixel spacing in the Path Tracing tab (default: 94 nm/pixel)")
-    print("2. Click on the image to set multiple waypoints")
-    print("3. Click 'Find Path (Fast Algorithm)' for rapid brightest path calculation")
-    print("4. Use 'Path Management' tab to view, connect, and export paths")
-    print("5. Run segmentation with contrasting color assignment")
-    print("6. Use 'Memory-Optimized Spine Detection' with nanometer-based parameters")
-    print("7. Segment individual spines with contrasting neon colors")
-    print("")
-    print("⚡ PERFORMANCE IMPROVEMENTS:")
-    print("   • 10-50x faster path computation with parallel processing")
-    print("   • 2-4x faster tube data generation")
-    print("   • Numba-optimized core functions")
-    print("   • Intelligent worker detection for optimal parallel performance")
-    print("")
-    print("🎨 VISUAL ENHANCEMENTS:")
-    print("   • Contrasting color pairs for dendrite-spine visualization")
-    print("   • Muted colors for dendrites, neon colors for spines")
-    print("   • B-spline smoothed paths for natural dendrite curves")
-    print("===============================================================================\n")
-    
     return viewer
 
 # For direct execution from command line

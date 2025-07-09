@@ -415,26 +415,34 @@ class SpineSegmentationWidget(QWidget):
                 print(f"Total segmented pixels: {np.sum(binary_spine_masks)}")
                 print(f"Using contrasting neon color: {spine_neon_color}")
                 
-                # Calculate current scaling for consistent layer scaling
-                z_scale = self.state['z_spacing_nm'] / self.state['xy_spacing_nm']
+                # Create the spine segmentation layer using add_image with proper colormap
+                # Convert binary masks to float and scale to color range
+                color_spine_masks = binary_spine_masks.astype(np.float32)
+                color_spine_masks[color_spine_masks > 0] = 1.0  # Ensure binary values
                 
-                # FIXED: Add spine segmentation layer without anisotropic scaling first
-                # The spine segmentation model works in pixel coordinates, so we add it normally
-                spine_segmentation_layer = self.viewer.add_labels(
-                    binary_spine_masks,
+                # Add as image layer
+                spine_segmentation_layer = self.viewer.add_image(
+                    color_spine_masks,
                     name=spine_seg_layer_name,
                     opacity=0.8,  # Slightly higher opacity for spines
-                    blending='additive'
+                    blending='additive',
+                    colormap='viridis'  # Will be overridden
                 )
                 
-                # THEN apply the scaling to match other layers
-                spine_segmentation_layer.scale = (z_scale, 1.0, 1.0)
+                # Create custom neon colormap: [transparent, neon_color]
+                custom_neon_cmap = np.array([
+                    [0, 0, 0, 0],  # Transparent for 0 values
+                    [spine_neon_color[0], spine_neon_color[1], spine_neon_color[2], 1]  # Neon color for 1 values
+                ])
                 
-                # For labels layer, we need to set the color in the colormap
-                spine_segmentation_layer.color = {1: spine_neon_color}
+                # Apply the custom neon colormap
+                spine_segmentation_layer.colormap = custom_neon_cmap
                 
-                print(f"Applied scaling: {spine_segmentation_layer.scale}")
-                print(f"Applied neon color: {spine_neon_color}")
+                # Set contrast limits to ensure proper color mapping
+                spine_segmentation_layer.contrast_limits = [0, 1]
+                
+                print(f"Applied custom neon colormap: {custom_neon_cmap}")
+                print(f"Spine layer contrast limits: {spine_segmentation_layer.contrast_limits}")
                 
                 # Store reference in state
                 if 'spine_segmentation_layers' not in self.state:
