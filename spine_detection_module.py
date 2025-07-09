@@ -345,9 +345,8 @@ class SpineDetectionWidget(QWidget):
         
         self.handling_event = False
         
-        # Get initial spacing from state
-        self.xy_spacing_nm = self.state.get('xy_spacing_nm', 94.0)
-        self.z_spacing_nm = self.state.get('z_spacing_nm', 500.0)
+        # Get initial pixel spacing from state
+        self.pixel_spacing_nm = self.state.get('pixel_spacing_nm', 94.0)
         
         self.setup_ui()
     
@@ -385,7 +384,7 @@ class SpineDetectionWidget(QWidget):
         max_distance_layout.addWidget(QLabel("Max Distance:"))
         self.max_distance_spin = QDoubleSpinBox()
         self.max_distance_spin.setRange(100.0, 50000.0)
-        self.max_distance_spin.setValue(1410.0)  # Default 1410 nm (15 pixels × 94 nm/pixel)
+        self.max_distance_spin.setValue(2820.0)  # Default 2820 nm (30 pixels × 94 nm/pixel)
         self.max_distance_spin.setDecimals(0)
         self.max_distance_spin.setSuffix(" nm")
         self.max_distance_spin.setToolTip("Maximum distance threshold for grouping spines")
@@ -397,7 +396,7 @@ class SpineDetectionWidget(QWidget):
         frame_range_layout.addWidget(QLabel("Frame Extension:"))
         self.frame_range_spin = QSpinBox()
         self.frame_range_spin.setRange(0, 5)
-        self.frame_range_spin.setValue(2)
+        self.frame_range_spin.setValue(3)
         self.frame_range_spin.setToolTip("Number of frames to check before/after each spine")
         frame_range_layout.addWidget(self.frame_range_spin)
         params_layout.addLayout(frame_range_layout)
@@ -561,16 +560,15 @@ class SpineDetectionWidget(QWidget):
             fov_nm = 3760.0  # Fixed at 3760 nm (40 pixels × 94 nm/pixel default)
             zoom_size_nm = 3760.0  # Fixed at 3760 nm (40 pixels × 94 nm/pixel default)
             
-            # Convert nanometers to pixels using current XY spacing (spine detection is primarily in XY plane)
-            xy_spacing = self.xy_spacing_nm
-            z_spacing = self.z_spacing_nm
-            max_distance_pixels = int(max_distance_nm / xy_spacing)
-            fov_pixels = int(fov_nm / xy_spacing)
-            zoom_size_pixels = int(zoom_size_nm / xy_spacing)
+            # Convert nanometers to pixels using current pixel spacing
+            pixel_spacing = self.pixel_spacing_nm
+            max_distance_pixels = int(max_distance_nm / pixel_spacing)
+            fov_pixels = int(fov_nm / pixel_spacing)
+            zoom_size_pixels = int(zoom_size_nm / pixel_spacing)
             
             verbose = True  # Fix: Define verbose variable
             if verbose:
-                print(f"XY spacing: {xy_spacing:.1f} nm/pixel, Z spacing: {z_spacing:.1f} nm/slice")
+                print(f"Pixel spacing: {pixel_spacing:.1f} nm/pixel")
                 print(f"Max distance: {max_distance_nm:.0f} nm = {max_distance_pixels} pixels")
                 print(f"Field of view: {fov_nm:.0f} nm = {fov_pixels} pixels (fixed)") 
                 print(f"Zoom size: {zoom_size_nm:.0f} nm = {zoom_size_pixels} pixels (fixed)")
@@ -624,18 +622,14 @@ class SpineDetectionWidget(QWidget):
                         self.viewer.layers.remove(layer)
                         break
                 
-                # Calculate current scaling for consistent layer scaling
-                z_scale = self.z_spacing_nm / self.xy_spacing_nm
-                
-                # Add new spine layer with proper scaling
+                # Add new spine layer
                 spine_layer = self.viewer.add_points(
                     spine_positions,
                     name=spine_layer_name,
                     size=8,
                     face_color='red',
                     opacity=0.8,
-                    symbol='cross',
-                    scale=(z_scale, 1.0, 1.0)  # Apply same scaling as other layers
+                    symbol='cross'
                 )
                 
                 # Store references
@@ -675,8 +669,7 @@ class SpineDetectionWidget(QWidget):
                         'zoom_size_pixels': zoom_size_pixels,
                         'frame_range': frame_range,
                         'enable_parallel': enable_parallel,
-                        'xy_spacing_nm': xy_spacing,
-                        'z_spacing_nm': z_spacing
+                        'pixel_spacing_nm': pixel_spacing
                     }
                 }
                 
@@ -701,23 +694,20 @@ class SpineDetectionWidget(QWidget):
             self.detection_progress.setValue(100)
             self.detect_spines_btn.setEnabled(True)
     
-    def update_spacing(self, new_xy_spacing, new_z_spacing):
-        """Update spacing and recalculate default parameter values"""
-        self.xy_spacing_nm = new_xy_spacing
-        self.z_spacing_nm = new_z_spacing
+    def update_pixel_spacing(self, new_spacing):
+        """Update pixel spacing and recalculate default parameter values"""
+        self.pixel_spacing_nm = new_spacing
         
-        # Update default values based on new XY spacing (spine detection uses XY primarily)
-        default_max_distance_pixels = 20  # Original default in pixels
+        # Update default values based on new pixel spacing (keeping same pixel equivalents)
+        default_max_distance_pixels = 15  # Original default in pixels
         
-        # Convert to nanometers with new XY spacing
-        new_max_distance_nm = default_max_distance_pixels * new_xy_spacing
+        # Convert to nanometers with new spacing
+        new_max_distance_nm = default_max_distance_pixels * new_spacing
         
         # Update the UI values (only max distance, FOV and zoom are now fixed)
         self.max_distance_spin.setValue(new_max_distance_nm)
         
-        z_scale = new_z_spacing / new_xy_spacing
-        print(f"Spine detection: Updated to XY={new_xy_spacing:.1f} nm/pixel, Z={new_z_spacing:.1f} nm/slice")
+        print(f"Spine detection: Updated to {new_spacing:.1f} nm/pixel")
         print(f"  Max distance: {new_max_distance_nm:.0f} nm")
-        print(f"  Field of view: {40 * new_xy_spacing:.0f} nm (fixed)")
-        print(f"  Zoom size: {40 * new_xy_spacing:.0f} nm (fixed)")
-        print(f"  3D scale ratio (Z/XY): {z_scale:.2f}")
+        print(f"  Field of view: {40 * new_spacing:.0f} nm (fixed)")
+        print(f"  Zoom size: {40 * new_spacing:.0f} nm (fixed)")

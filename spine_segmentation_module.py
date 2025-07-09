@@ -29,7 +29,6 @@ class SpineSegmentationWidget(QWidget):
         self.spine_segmenter = None
 
         self.xy_spacing_nm = self.state.get('xy_spacing_nm', 94.0)
-        self.z_spacing_nm = self.state.get('z_spacing_nm', 500.0)
         
         # Flag to prevent recursive event handling
         self.handling_event = False
@@ -37,25 +36,21 @@ class SpineSegmentationWidget(QWidget):
         # Setup UI
         self.setup_ui()
 
-    def update_spacing(self, new_xy_spacing, new_z_spacing):
-        """Update spacing for spine segmentation module"""
-        self.xy_spacing_nm = new_xy_spacing
-        self.z_spacing_nm = new_z_spacing
+    def update_pixel_spacing(self, new_spacing):
+        """Update pixel spacing for spine segmentation module"""
+        self.pixel_spacing_nm = new_spacing
         
         # Update patch size if you have it as a nanometer parameter
         if hasattr(self, 'patch_size_nm_spin'):
-            # Keep the same pixel equivalent using XY spacing
+            # Keep the same pixel equivalent 
             default_patch_pixels = 128
-            new_patch_nm = default_patch_pixels * new_xy_spacing
+            new_patch_nm = default_patch_pixels * new_spacing
             self.patch_size_nm_spin.setValue(new_patch_nm)
-            z_scale = new_z_spacing / new_xy_spacing
-            print(f"Spine segmentation: Updated to XY={new_xy_spacing:.1f} nm/pixel, Z={new_z_spacing:.1f} nm/slice")
+            print(f"Spine segmentation: Updated to {new_spacing:.1f} nm/pixel")
             print(f"  Patch size: {new_patch_nm:.0f} nm")
-            print(f"  3D scale ratio (Z/XY): {z_scale:.2f}")
         else:
-            z_scale = new_z_spacing / new_xy_spacing
-            print(f"Spine segmentation: Updated to XY={new_xy_spacing:.1f} nm/pixel, Z={new_z_spacing:.1f} nm/slice")
-            print(f"  3D scale ratio (Z/XY): {z_scale:.2f}")
+            print(f"Spine segmentation: Updated pixel spacing to {new_spacing:.1f} nm/pixel")
+
     
     def setup_ui(self):
         """Create the UI panel with controls"""

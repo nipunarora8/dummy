@@ -28,7 +28,15 @@ class NeuroSAMWidget(QWidget):
         self.viewer = viewer
         self.image = image
         
-        # Store state shared between modules FIRST
+        # Initialize the image layer
+        self.image_layer = self.viewer.add_image(
+            self.image, name='Image', colormap='gray'
+        )
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Store state shared between modules
         self.state = {
             'paths': {},              # Dictionary of path data
             'path_layers': {},        # Dictionary of path layers
@@ -40,34 +48,19 @@ class NeuroSAMWidget(QWidget):
             'spine_layers': {},       # Dictionary of spine layers
             'spine_data': {},         # Enhanced spine detection data
             'spine_segmentation_layers': {},  # Dictionary of spine segmentation layers
-            'xy_spacing_nm': 94.0,    # Global XY pixel spacing in nm/pixel (default)
-            'z_spacing_nm': 500.0,    # Global Z slice spacing in nm/slice (default)
+            'pixel_spacing_nm': 94.0,  # Global pixel spacing in nm/pixel (default)
         }
         
-        # Now initialize the image layer with proper 3D scaling
-        z_scale = self.state['z_spacing_nm'] / self.state['xy_spacing_nm']  # Calculate Z scale factor
-        self.image_layer = self.viewer.add_image(
-            self.image, 
-            name='Image', 
-            colormap='gray',
-            scale=(z_scale, 1.0, 1.0)  # Apply anisotropic scaling (Z, Y, X)
-        )
-        
-        # Setup UI
-        self.setup_ui()
-        
-        # Initialize the waypoints layer with same scaling as image
-        z_scale = self.state['z_spacing_nm'] / self.state['xy_spacing_nm']
+        # Initialize the waypoints layer
         self.state['waypoints_layer'] = self.viewer.add_points(
             np.empty((0, self.image.ndim)),
             name='Point Selection',
             size=15,
             face_color='cyan',
-            symbol='x',
-            scale=(z_scale, 1.0, 1.0)  # Same scaling as image
+            symbol='x'
         )
         
-        # Initialize 3D traced path layer if applicable with same scaling
+        # Initialize 3D traced path layer if applicable
         if self.image.ndim > 2:
             self.state['traced_path_layer'] = self.viewer.add_points(
                 np.empty((0, self.image.ndim)),
@@ -75,8 +68,7 @@ class NeuroSAMWidget(QWidget):
                 size=4,
                 face_color='magenta',
                 opacity=0.7,
-                visible=False,
-                scale=(z_scale, 1.0, 1.0)  # Same scaling as image
+                visible=False
             )
         
         # Initialize modules with optimized algorithms
@@ -96,9 +88,8 @@ class NeuroSAMWidget(QWidget):
         # Connect signals between modules
         self._connect_signals()
         
-        # Connect spacing changes
-        self.path_tracing_widget.xy_spacing_spin.valueChanged.connect(self.on_xy_spacing_changed)
-        self.path_tracing_widget.z_spacing_spin.valueChanged.connect(self.on_z_spacing_changed)
+        # Connect pixel spacing changes
+        self.path_tracing_widget.pixel_spacing_spin.valueChanged.connect(self.on_pixel_spacing_changed)
         
         # Set up event handling for points layers
         self.state['waypoints_layer'].events.data.connect(self.path_tracing_widget.on_waypoints_changed)
@@ -347,65 +338,13 @@ class NeuroSAMWidget(QWidget):
         
         napari.utils.notifications.show_info(" ".join(notification_parts))
     
-    def on_xy_spacing_changed(self, new_xy_spacing):
-        """Handle when XY spacing is changed"""
-        self.state['xy_spacing_nm'] = new_xy_spacing
+    def on_pixel_spacing_changed(self, new_spacing):
+        """Handle when pixel spacing is changed"""
+        self.state['pixel_spacing_nm'] = new_spacing
         
-        # Update 3D view scaling
-        self._update_image_scaling()
+        # Update all modules with new pixel spacing
+        self.segmentation_widget.update_pixel_spacing(new_spacing)
+        self.spine_detection_widget.update_pixel_spacing(new_spacing)
+        self.spine_segmentation_widget.update_pixel_spacing(new_spacing)
         
-        # Update all modules with new XY spacing
-        self.segmentation_widget.update_spacing(new_xy_spacing, self.state['z_spacing_nm'])
-        self.spine_detection_widget.update_spacing(new_xy_spacing, self.state['z_spacing_nm'])
-        self.spine_segmentation_widget.update_spacing(new_xy_spacing, self.state['z_spacing_nm'])
-        
-        print(f"Updated XY spacing to {new_xy_spacing:.1f} nm/pixel")
-    
-    def on_z_spacing_changed(self, new_z_spacing):
-        """Handle when Z spacing is changed"""
-        self.state['z_spacing_nm'] = new_z_spacing
-        
-        # Update 3D view scaling
-        self._update_image_scaling()
-        
-        # Update all modules with new Z spacing
-        self.segmentation_widget.update_spacing(self.state['xy_spacing_nm'], new_z_spacing)
-        self.spine_detection_widget.update_spacing(self.state['xy_spacing_nm'], new_z_spacing)
-        self.spine_segmentation_widget.update_spacing(self.state['xy_spacing_nm'], new_z_spacing)
-        
-        print(f"Updated Z spacing to {new_z_spacing:.1f} nm/slice")
-    
-    def _update_image_scaling(self):
-        """Update the 3D view scaling based on current spacing"""
-        z_scale = self.state['z_spacing_nm'] / self.state['xy_spacing_nm']
-        
-        # Update ALL layers with the same scaling to maintain coordinate consistency
-        self.image_layer.scale = (z_scale, 1.0, 1.0)
-        
-        if self.state['waypoints_layer'] is not None:
-            self.state['waypoints_layer'].scale = (z_scale, 1.0, 1.0)
-        
-        if self.state['traced_path_layer'] is not None:
-            self.state['traced_path_layer'].scale = (z_scale, 1.0, 1.0)
-        
-        # Update any existing path layers
-        for layer in self.state['path_layers'].values():
-            if layer is not None:
-                layer.scale = (z_scale, 1.0, 1.0)
-        
-        # Update any existing spine layers
-        for layer in self.state.get('spine_layers', {}).values():
-            if layer is not None:
-                layer.scale = (z_scale, 1.0, 1.0)
-        
-        # Update segmentation layer if it exists
-        if self.state.get('segmentation_layer') is not None:
-            self.state['segmentation_layer'].scale = (z_scale, 1.0, 1.0)
-        
-        # Update spine segmentation layers if they exist
-        for layer in self.state.get('spine_segmentation_layers', {}).values():
-            if layer is not None:
-                layer.scale = (z_scale, 1.0, 1.0)
-        
-        print(f"Updated 3D view scaling: Z/XY ratio = {z_scale:.2f}")
-        print(f"Applied scaling (z_scale, 1.0, 1.0) = ({z_scale:.2f}, 1.0, 1.0) to all layers")
+        print(f"Updated global pixel spacing to {new_spacing:.1f} nm/pixel")
