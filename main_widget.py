@@ -79,10 +79,10 @@ class NeuroSAMWidget(QWidget):
         self.path_visualization_widget = PathVisualizationWidget(self.viewer, self.image, self.state)
         
         # Add modules to tabs
-        self.tabs.addTab(self.path_tracing_widget, "Fast Path Tracing")
+        self.tabs.addTab(self.path_tracing_widget, "Path Tracing")
         self.tabs.addTab(self.path_visualization_widget, "Path Management")
         self.tabs.addTab(self.segmentation_widget, "Segmentation")
-        self.tabs.addTab(self.spine_detection_widget, "Optimized Spine Detection")
+        self.tabs.addTab(self.spine_detection_widget, "Spine Detection")
         self.tabs.addTab(self.spine_segmentation_widget, "Spine Segmentation")
         
         # Connect signals between modules
@@ -99,7 +99,7 @@ class NeuroSAMWidget(QWidget):
         
         # Activate the waypoints layer to begin workflow
         self.viewer.layers.selection.active = self.state['waypoints_layer']
-        napari.utils.notifications.show_info("Fast Path Tracing ready. Click points on the dendrite structure.")
+        napari.utils.notifications.show_info("Path Tracing ready. Click points on the dendrite structure.")
 
     def setup_ui(self):
         """Create the UI panel with controls"""
@@ -110,7 +110,7 @@ class NeuroSAMWidget(QWidget):
         self.setLayout(layout)
         
         # Title
-        title = QLabel("<b>Neuro-SAM with Fast Algorithms & Parallel Processing</b>")
+        title = QLabel("<b>Neuro-SAM</b>")
         layout.addWidget(title)
         
         # Create tabs for different functionality
@@ -120,7 +120,7 @@ class NeuroSAMWidget(QWidget):
         layout.addWidget(self.tabs)
         
         # Current path info at the bottom
-        self.path_info = QLabel("Path: Ready for fast tracing")
+        self.path_info = QLabel("Path: Ready for tracing")
         layout.addWidget(self.path_info)
     
     def _connect_signals(self):
@@ -152,8 +152,8 @@ class NeuroSAMWidget(QWidget):
         
         # Determine algorithm info
         algorithm_info = ""
-        if path_info.get('algorithm') == 'fast_waypoint_astar':
-            algorithm_info = " (fast algorithm"
+        if path_info.get('algorithm') == 'waypoint_astar':
+            algorithm_info = " (waypoint_astar"
             if path_info.get('parallel_processing', False):
                 algorithm_info += ", parallel"
             algorithm_info += ")"
@@ -201,8 +201,8 @@ class NeuroSAMWidget(QWidget):
         # Build status message
         status_parts = [f"{path_name} with {len(path_data)} points"]
         
-        if path_info.get('algorithm') == 'fast_waypoint_astar':
-            status_parts.append("(fast algorithm")
+        if path_info.get('algorithm') == 'waypoint_astar':
+            status_parts.append("(waypoint_astar")
             if path_info.get('parallel_processing', False):
                 status_parts.append(", parallel")
             status_parts.append(")")
@@ -227,8 +227,8 @@ class NeuroSAMWidget(QWidget):
         status_parts = [f"{path_data['name']} with {len(path_data['data'])} points"]
         
         # Add algorithm info
-        if path_data.get('algorithm') == 'fast_waypoint_astar':
-            status_parts.append("(fast algorithm")
+        if path_data.get('algorithm') == 'waypoint_astar':
+            status_parts.append("(waypoint_astar")
             if path_data.get('parallel_processing', False):
                 status_parts.append(", parallel")
             status_parts.append(")")
@@ -269,8 +269,8 @@ class NeuroSAMWidget(QWidget):
         # Build comprehensive status message
         status_parts = [f"Segmentation completed for {path_data['name']}"]
         
-        if path_data.get('algorithm') == 'fast_waypoint_astar':
-            status_parts.append("(fast algorithm path)")
+        if path_data.get('algorithm') == 'waypoint_astar':
+            status_parts.append("(waypoint_astar path)")
         elif path_data.get('smoothed', False):
             status_parts.append("(smoothed path)")
         
@@ -296,8 +296,8 @@ class NeuroSAMWidget(QWidget):
                     status_parts.append("(optimized)")
         
         # Add path algorithm info
-        if path_data.get('algorithm') == 'fast_waypoint_astar':
-            status_parts.append("(fast algorithm path)")
+        if path_data.get('algorithm') == 'waypoint_astar':
+            status_parts.append("(waypoint_astar path)")
         elif path_data.get('smoothed', False):
             status_parts.append("(smoothed path)")
         
@@ -318,13 +318,13 @@ class NeuroSAMWidget(QWidget):
         
         # Add algorithm details
         algorithm_details = []
-        if path_data.get('algorithm') == 'fast_waypoint_astar':
-            algorithm_details.append("fast path tracing")
+        if path_data.get('algorithm') == 'waypoint_astar':
+            algorithm_details.append("path tracing")
         
         if 'spine_data' in self.state and path_id in self.state['spine_data']:
             spine_info = self.state['spine_data'][path_id]
             if spine_info.get('detection_method') == 'optimized_angle_based_extended':
-                algorithm_details.append("optimized spine detection")
+                algorithm_details.append("spine detection")
         
         if algorithm_details:
             status_parts.append(f"({', '.join(algorithm_details)})")

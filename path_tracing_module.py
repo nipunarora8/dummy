@@ -131,7 +131,7 @@ class PathTracingWidget(QWidget):
         self.setLayout(layout)
         
         # Main instruction
-        title = QLabel("<b>Fast Path Tracing with Parallel Processing</b>")
+        title = QLabel("<b>Path Tracing</b>")
         layout.addWidget(title)
         
         # Instructions section
@@ -258,7 +258,7 @@ class PathTracingWidget(QWidget):
         buttons_layout.setSpacing(2)
         
         # Main path finding button
-        self.find_path_btn = QPushButton("Find Path (Fast Algorithm)")
+        self.find_path_btn = QPushButton("Find Path")
         self.find_path_btn.setFixedHeight(26)
         self.find_path_btn.setStyleSheet("font-weight: bold; background-color: #4CAF50; color: white;")
         self.find_path_btn.clicked.connect(self.find_path)
@@ -452,7 +452,7 @@ class PathTracingWidget(QWidget):
                     'layer': path_layer,
                     'original_clicks': [point.copy() for point in self.clicked_points],
                     'smoothed': self.enable_smoothing_cb.isChecked() and self.smoothing_factor_spin.value() > 0,
-                    'algorithm': 'fast_waypoint_astar',
+                    'algorithm': 'waypoint_astar',
                     'parallel_processing': enable_parallel,
                     'pixel_spacing_nm': self.pixel_spacing_spin.value()  # Store pixel spacing with path
                 }
@@ -635,8 +635,8 @@ class PathTracingWidget(QWidget):
             
             # Show path status including algorithm type
             path_type = ""
-            if path_data.get('algorithm') == 'fast_waypoint_astar':
-                path_type = " (fast algorithm"
+            if path_data.get('algorithm') == 'waypoint_astar':
+                path_type = " (waypoint_astar"
                 if path_data.get('parallel_processing', False):
                     path_type += ", parallel"
                 path_type += ")"

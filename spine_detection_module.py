@@ -8,7 +8,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Signal
 import sys
 sys.path.append('../path_tracing/brightest-path-lib')
-# Import the memory-optimized tube data generation
+# Import the tube data generation
 from brightest_path_lib.visualization.tube_data import create_tube_data  # Now uses minimal version
 from skimage.feature import blob_log
 
@@ -357,8 +357,8 @@ class SpineDetectionWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         self.setLayout(layout)
         
-        layout.addWidget(QLabel("<b>Memory-Optimized Spine Detection</b>"))
-        layout.addWidget(QLabel("Uses minimal tube data generation (97.4% memory reduction)"))
+        layout.addWidget(QLabel("<b>Spine Detection</b>"))
+        layout.addWidget(QLabel("Uses tube-view of the data"))
         layout.addWidget(QLabel("1. Select a segmented path\n2. Set parameters\n3. Click 'Detect Spines'"))
         
         separator1 = QFrame()
@@ -416,7 +416,7 @@ class SpineDetectionWidget(QWidget):
         layout.addWidget(separator2)
         
         # Detection button
-        self.detect_spines_btn = QPushButton("Detect Spines (Memory Optimized)")
+        self.detect_spines_btn = QPushButton("Detect Spines")
         self.detect_spines_btn.setFixedHeight(22)
         self.detect_spines_btn.clicked.connect(self.run_spine_detection)
         self.detect_spines_btn.setEnabled(False)
@@ -491,7 +491,7 @@ class SpineDetectionWidget(QWidget):
                     if has_spines:
                         self.status_label.setText(f"Status: Path '{path_name}' already has spine detection")
                     else:
-                        self.status_label.setText(f"Status: Path '{path_name}' selected for memory-optimized spine detection")
+                        self.status_label.setText(f"Status: Path '{path_name}' selected for spine detection")
                     
                     self.detect_spines_btn.setEnabled(True)
             else:
@@ -515,7 +515,7 @@ class SpineDetectionWidget(QWidget):
         self.update_path_list()
     
     def run_spine_detection(self):
-        """Run memory-optimized spine detection on the selected path"""
+        """Run spine detection on the selected path"""
         if not hasattr(self, 'selected_path_id'):
             napari.utils.notifications.show_info("Please select a path for spine detection")
             return
@@ -533,7 +533,7 @@ class SpineDetectionWidget(QWidget):
             brightest_path = np.array(path_data['data'])
             
             # Update UI
-            self.status_label.setText(f"Status: Running memory-optimized spine detection on {path_name}...")
+            self.status_label.setText(f"Status: Running spine detection on {path_name}...")
             self.detection_progress.setValue(10)
             self.detect_spines_btn.setEnabled(False)
             
@@ -650,7 +650,7 @@ class SpineDetectionWidget(QWidget):
                     f"Frames with initial spines: {frames_with_spines}\n"
                     f"Detection parameters: Max distance={max_distance_nm:.0f}nm"
                 )
-                self.status_label.setText(f"Status: Memory-optimized spine detection completed for {path_name}")
+                self.status_label.setText(f"Status: Spine detection completed for {path_name}")
                 
                 # Store enhanced spine data
                 if 'spine_data' not in self.state:
@@ -676,14 +676,14 @@ class SpineDetectionWidget(QWidget):
                 # Emit signal
                 self.spines_detected.emit(path_id, spine_positions.tolist())
                 
-                napari.utils.notifications.show_info(f"Detected {len(spine_positions)} spine positions for {path_name} using memory-optimized algorithm")
+                napari.utils.notifications.show_info(f"Detected {len(spine_positions)} spine positions for {path_name} using spine detection algorithm")
             else:
                 self.results_label.setText("Results: No spines detected")
                 self.status_label.setText(f"Status: No spines detected for {path_name}")
                 napari.utils.notifications.show_info("No spines detected")
         
         except Exception as e:
-            error_msg = f"Error during memory-optimized spine detection: {str(e)}"
+            error_msg = f"Error during spine detection: {str(e)}"
             self.status_label.setText(f"Status: {error_msg}")
             self.results_label.setText("Results: Error during spine detection")
             napari.utils.notifications.show_info(error_msg)
