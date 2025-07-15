@@ -83,7 +83,7 @@ def pad_image_for_patches(image, patch_size=128, pad_value=0):
 
 def run_neuro_sam(image=None, image_path=None):
     """
-    Launch the NeuroSAM plugin with fast waypoint A* algorithm and optimized tube data generation
+    Launch the NeuroSAM plugin
     
     Parameters:
     -----------
@@ -121,7 +121,7 @@ def run_neuro_sam(image=None, image_path=None):
     # Create and add our widget with enhanced capabilities
     neuro_sam_widget = NeuroSAMWidget(viewer, image)
     viewer.window.add_dock_widget(
-        neuro_sam_widget, name="Neuro-SAM Fast", area="right"
+        neuro_sam_widget, name="Neuro-SAM", area="right"
     )
     
     # Set initial view
