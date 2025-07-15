@@ -116,7 +116,6 @@ class SpineSegmenter:
         # Prepare points and labels (all spine centers are positive)
         points = np.array(spine_points, dtype=np.float32)
         labels = np.array([1] * len(spine_points), dtype=np.int32)
-        print(points)
         
         try:
             with torch.no_grad():
@@ -198,12 +197,12 @@ class SpineSegmenter:
                 if patch.shape[0] < 10 or patch.shape[1] < 10:
                     continue
                 
-                try:
-                    patch_threshold = threshold_otsu(patch)
-                    if patch_threshold < otsu_threshold / 2:
-                        continue
-                except:
-                    continue
+                # try:
+                #     patch_threshold = threshold_otsu(patch)
+                #     if patch_threshold < otsu_threshold / 2:
+                #         continue
+                # except:
+                #     continue
                 
                 # Find spine positions in this patch
                 patch_spine_points = []

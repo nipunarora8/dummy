@@ -171,9 +171,9 @@ def process_all_frames_with_extension(tube_data, image, brightest_path, max_dist
     """
     # Fixed parameters (matching original code)
     detection_params = {
-        'min_sigma_2d': 5, 'max_sigma_2d': 10, 'threshold_2d': 0.05,
-        'min_sigma_tube': 5, 'max_sigma_tube': 5, 'threshold_tube': 0.02,
-        'angle_threshold': 20, 'angle_weight': 0.7
+        'min_sigma_2d': 4, 'max_sigma_2d': 12, 'threshold_2d': 0.04,
+        'min_sigma_tube': 4, 'max_sigma_tube': 10, 'threshold_tube': 0.025,
+        'angle_threshold': 25, 'angle_weight': 0.8
     }
     
     initial_spine_positions = []
