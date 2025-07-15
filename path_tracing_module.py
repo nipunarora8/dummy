@@ -13,18 +13,19 @@ from scipy.interpolate import splprep, splev
 
 
 class PathSmoother:
-    """B-spline based path smoothing for dendrite traces"""
+    """B-spline based path smoothing for dendrite traces with anisotropic scaling support"""
     
     def __init__(self):
         pass
     
-    def smooth_path(self, path_points, smoothing_factor=None, 
+    def smooth_path(self, path_points, spacing_xyz=(1.0, 1.0, 1.0), smoothing_factor=None, 
                    num_points=None, preserve_endpoints=True):
         """
-        Smooth a 3D path using B-spline interpolation
+        Smooth a 3D path using B-spline interpolation with anisotropic scaling
         
         Args:
             path_points: numpy array of shape (N, 3) with [z, y, x] coordinates
+            spacing_xyz: voxel spacing in (x, y, z) format for proper distance calculation
             smoothing_factor: B-spline smoothing parameter (higher = more smooth)
             num_points: number of points in smoothed path (None = same as input)
             preserve_endpoints: whether to keep original start/end points
@@ -39,8 +40,10 @@ class PathSmoother:
         start_point = path_points[0].copy()
         end_point = path_points[-1].copy()
         
-        # Apply B-spline smoothing
-        smoothed_path = self._bspline_smooth(path_points, smoothing_factor, num_points)
+        # Apply B-spline smoothing with anisotropic scaling consideration
+        smoothed_path = self._bspline_smooth_anisotropic(
+            path_points, spacing_xyz, smoothing_factor, num_points
+        )
         
         # Restore endpoints if requested
         if preserve_endpoints and len(smoothed_path) > 0:
@@ -49,21 +52,30 @@ class PathSmoother:
         
         return smoothed_path
     
-    def _bspline_smooth(self, path_points, smoothing_factor=None, num_points=None):
-        """B-spline smoothing using scipy.interpolate.splprep"""
+    def _bspline_smooth_anisotropic(self, path_points, spacing_xyz, smoothing_factor=None, num_points=None):
+        """B-spline smoothing with anisotropic spacing consideration"""
         if smoothing_factor is None:
-            # Auto-determine smoothing factor based on path length
+            # Auto-determine smoothing factor based on path length and anisotropy
             path_length = len(path_points)
-            smoothing_factor = max(0, path_length - np.sqrt(2 * path_length))
+            # Consider anisotropy in smoothing factor calculation
+            anisotropy_factor = max(spacing_xyz) / min(spacing_xyz)
+            smoothing_factor = max(0, path_length - np.sqrt(2 * path_length)) * anisotropy_factor
         
         if num_points is None:
             num_points = len(path_points)
         
         try:
-            # Prepare coordinates
-            x = path_points[:, 2]  # x coordinates
-            y = path_points[:, 1]  # y coordinates
-            z = path_points[:, 0]  # z coordinates
+            # Scale coordinates by voxel spacing for proper distance calculation
+            # path_points are in [z, y, x] format, spacing is in (x, y, z) format
+            scaled_points = path_points.copy().astype(float)
+            scaled_points[:, 0] *= spacing_xyz[2]  # Z scaling
+            scaled_points[:, 1] *= spacing_xyz[1]  # Y scaling  
+            scaled_points[:, 2] *= spacing_xyz[0]  # X scaling
+            
+            # Prepare coordinates for spline fitting
+            x = scaled_points[:, 2]  # x coordinates (scaled)
+            y = scaled_points[:, 1]  # y coordinates (scaled)
+            z = scaled_points[:, 0]  # z coordinates (scaled)
             
             # Fit B-spline (k=3 for cubic, k=min(3, len-1) for short paths)
             k = min(3, len(path_points) - 1)
@@ -73,39 +85,50 @@ class PathSmoother:
             u_new = np.linspace(0, 1, num_points)
             x_smooth, y_smooth, z_smooth = splev(u_new, tck)
             
+            # Scale back to voxel coordinates
+            x_smooth /= spacing_xyz[0]  # Unscale X
+            y_smooth /= spacing_xyz[1]  # Unscale Y
+            z_smooth /= spacing_xyz[2]  # Unscale Z
+            
             # Combine back to [z, y, x] format
             smoothed_path = np.column_stack([z_smooth, y_smooth, x_smooth])
             
             return smoothed_path
             
         except Exception as e:
-            print(f"B-spline smoothing failed: {e}, falling back to original path")
+            print(f"Anisotropic B-spline smoothing failed: {e}, falling back to original path")
             return path_points.copy()
 
 
 class PathTracingWidget(QWidget):
-    """Widget for tracing the brightest path with fast waypoint A* algorithm and B-spline smoothing."""
+    """Widget for tracing the brightest path with anisotropic scaling support."""
     
     # Define signals
     path_created = Signal(str, str, object)  # path_id, path_name, path_data
     path_updated = Signal(str, str, object)  # path_id, path_name, path_data
     
-    def __init__(self, viewer, image, state):
-        """Initialize the path tracing widget.
+    def __init__(self, viewer, image, state, scaler, scaling_update_callback):
+        """Initialize the path tracing widget with anisotropic scaling support.
         
         Parameters:
         -----------
         viewer : napari.Viewer
             The napari viewer instance
         image : numpy.ndarray
-            3D or higher-dimensional image data
+            3D or higher-dimensional image data (potentially scaled)
         state : dict
             Shared state dictionary between modules
+        scaler : AnisotropicScaler
+            The scaler instance for coordinate conversion
+        scaling_update_callback : function
+            Callback function when scaling is updated
         """
         super().__init__()
         self.viewer = viewer
         self.image = image
         self.state = state
+        self.scaler = scaler
+        self.scaling_update_callback = scaling_update_callback
         
         # List to store waypoints as they are clicked
         self.clicked_points = []
@@ -117,7 +140,7 @@ class PathTracingWidget(QWidget):
         # Flag to prevent recursive event handling
         self.handling_event = False
         
-        # Initialize path smoother
+        # Initialize path smoother with anisotropic support
         self.path_smoother = PathSmoother()
         
         # Setup UI
@@ -131,7 +154,7 @@ class PathTracingWidget(QWidget):
         self.setLayout(layout)
         
         # Main instruction
-        title = QLabel("<b>Path Tracing</b>")
+        title = QLabel("<b>Path Tracing (Anisotropic)</b>")
         layout.addWidget(title)
         
         # Instructions section
@@ -142,15 +165,48 @@ class PathTracingWidget(QWidget):
         instructions_section.setLayout(instructions_layout)
         
         instructions = QLabel(
-            "Instructions:\n"
-            "1. Click points on the dendrite structure\n"
-            "2. Click 'Find Path' to trace using fast algorithm\n"
+            "<b>Step 1: Configure Voxel Spacing</b><br>"
+            "Set correct X, Y, Z spacing, then click 'Apply Scaling'<br><br>"
+            "<b>Step 2: Trace Paths</b><br>"
+            "1. Click points on dendrite structure<br>"
+            "2. Click 'Find Path' to trace<br>"
             "3. Use 'Trace Another Path' for additional paths"
         )
         instructions.setWordWrap(True)
         instructions_layout.addWidget(instructions)
         
         layout.addWidget(instructions_section)
+        
+        # Add separator
+        separator0 = QFrame()
+        separator0.setFrameShape(QFrame.HLine)
+        separator0.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator0)
+        
+        # Anisotropic scaling section
+        self._add_scaling_controls(layout)
+        
+        # Add separator
+        separator1 = QFrame()
+        separator1.setFrameShape(QFrame.HLine)
+        separator1.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator1)
+        
+        # Current spacing display
+        spacing_info_section = QWidget()
+        spacing_info_layout = QVBoxLayout()
+        spacing_info_layout.setSpacing(2)
+        spacing_info_layout.setContentsMargins(2, 2, 2, 2)
+        spacing_info_section.setLayout(spacing_info_layout)
+        
+        self.spacing_info_label = QLabel("Current voxel spacing: Not set")
+        self.spacing_info_label.setStyleSheet("font-weight: bold; color: #0066cc;")
+        spacing_info_layout.addWidget(self.spacing_info_label)
+        
+        layout.addWidget(spacing_info_section)
+        
+        # Update spacing display
+        self._update_spacing_display()
         
         # Waypoint controls section
         waypoints_section = QWidget()
@@ -174,37 +230,6 @@ class PathTracingWidget(QWidget):
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
         
-        # Pixel spacing configuration section
-        spacing_section = QWidget()
-        spacing_layout = QVBoxLayout()
-        spacing_layout.setSpacing(2)
-        spacing_layout.setContentsMargins(2, 2, 2, 2)
-        spacing_section.setLayout(spacing_layout)
-        
-        spacing_layout.addWidget(QLabel("<b>Pixel Spacing Configuration</b>"))
-        
-        # Pixel spacing input
-        spacing_input_layout = QHBoxLayout()
-        spacing_input_layout.setSpacing(2)
-        spacing_input_layout.addWidget(QLabel("Pixel spacing:"))
-        self.pixel_spacing_spin = QDoubleSpinBox()
-        self.pixel_spacing_spin.setRange(1.0, 10000.0)
-        self.pixel_spacing_spin.setSingleStep(1.0)
-        self.pixel_spacing_spin.setValue(94.0)  # Default 94 nm/pixel
-        self.pixel_spacing_spin.setDecimals(1)
-        self.pixel_spacing_spin.setSuffix(" nm/pixel")
-        self.pixel_spacing_spin.setToolTip("Pixel spacing in nanometers per pixel (used throughout the project)")
-        spacing_input_layout.addWidget(self.pixel_spacing_spin)
-        spacing_layout.addLayout(spacing_input_layout)
-        
-        # Info label
-        spacing_info = QLabel("This setting affects all distance measurements in segmentation and spine detection")
-        spacing_info.setWordWrap(True)
-        spacing_info.setStyleSheet("color: #666; font-size: 9px;")
-        spacing_layout.addWidget(spacing_info)
-        
-        layout.addWidget(spacing_section)
-        
         # Fast algorithm settings
         algorithm_section = QWidget()
         algorithm_layout = QVBoxLayout()
@@ -220,7 +245,7 @@ class PathTracingWidget(QWidget):
         
         layout.addWidget(algorithm_section)
         
-        # Smoothing controls section
+        # Smoothing controls section with anisotropic support
         smoothing_section = QWidget()
         smoothing_layout = QVBoxLayout()
         smoothing_layout.setSpacing(2)
@@ -228,9 +253,9 @@ class PathTracingWidget(QWidget):
         smoothing_section.setLayout(smoothing_layout)
         
         # Smoothing checkbox
-        self.enable_smoothing_cb = QCheckBox("Enable B-spline Path Smoothing")
+        self.enable_smoothing_cb = QCheckBox("Enable Anisotropic B-spline Smoothing")
         self.enable_smoothing_cb.setChecked(True)
-        self.enable_smoothing_cb.setToolTip("Apply B-spline smoothing to traced paths for smooth, natural curves")
+        self.enable_smoothing_cb.setToolTip("Apply B-spline smoothing that considers anisotropic voxel spacing")
         smoothing_layout.addWidget(self.enable_smoothing_cb)
         
         # Smoothing factor
@@ -292,6 +317,201 @@ class PathTracingWidget(QWidget):
         self.error_status.setStyleSheet("color: red;")
         layout.addWidget(self.error_status)
     
+    def _add_scaling_controls(self, layout):
+        """Add anisotropic scaling controls to the layout"""
+        from qtpy.QtWidgets import (QGroupBox, QDoubleSpinBox, QComboBox, QCheckBox)
+        
+        # Scaling section
+        scaling_group = QGroupBox("Anisotropic Voxel Spacing")
+        scaling_layout = QVBoxLayout()
+        scaling_layout.setSpacing(2)
+        scaling_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Instructions
+        info_label = QLabel("Set voxel spacing in nanometers (will reshape the dataset):")
+        info_label.setWordWrap(True)
+        scaling_layout.addWidget(info_label)
+        
+        # X spacing
+        x_layout = QHBoxLayout()
+        x_layout.addWidget(QLabel("X spacing:"))
+        self.x_spacing_spin = QDoubleSpinBox()
+        self.x_spacing_spin.setRange(1.0, 10000.0)
+        self.x_spacing_spin.setSingleStep(1.0)
+        self.x_spacing_spin.setValue(self.scaler.current_spacing_xyz[0])
+        self.x_spacing_spin.setDecimals(1)
+        self.x_spacing_spin.setSuffix(" nm")
+        self.x_spacing_spin.setToolTip("X-axis voxel spacing in nanometers")
+        self.x_spacing_spin.valueChanged.connect(self._on_spacing_changed)
+        x_layout.addWidget(self.x_spacing_spin)
+        scaling_layout.addLayout(x_layout)
+        
+        # Y spacing
+        y_layout = QHBoxLayout()
+        y_layout.addWidget(QLabel("Y spacing:"))
+        self.y_spacing_spin = QDoubleSpinBox()
+        self.y_spacing_spin.setRange(1.0, 10000.0)
+        self.y_spacing_spin.setSingleStep(1.0)
+        self.y_spacing_spin.setValue(self.scaler.current_spacing_xyz[1])
+        self.y_spacing_spin.setDecimals(1)
+        self.y_spacing_spin.setSuffix(" nm")
+        self.y_spacing_spin.setToolTip("Y-axis voxel spacing in nanometers")
+        self.y_spacing_spin.valueChanged.connect(self._on_spacing_changed)
+        y_layout.addWidget(self.y_spacing_spin)
+        scaling_layout.addLayout(y_layout)
+        
+        # Z spacing
+        z_layout = QHBoxLayout()
+        z_layout.addWidget(QLabel("Z spacing:"))
+        self.z_spacing_spin = QDoubleSpinBox()
+        self.z_spacing_spin.setRange(1.0, 10000.0)
+        self.z_spacing_spin.setSingleStep(1.0)
+        self.z_spacing_spin.setValue(self.scaler.current_spacing_xyz[2])
+        self.z_spacing_spin.setDecimals(1)
+        self.z_spacing_spin.setSuffix(" nm")
+        self.z_spacing_spin.setToolTip("Z-axis voxel spacing in nanometers")
+        self.z_spacing_spin.valueChanged.connect(self._on_spacing_changed)
+        z_layout.addWidget(self.z_spacing_spin)
+        scaling_layout.addLayout(z_layout)
+        
+        # Interpolation method
+        interp_layout = QHBoxLayout()
+        interp_layout.addWidget(QLabel("Interpolation:"))
+        self.interp_combo = QComboBox()
+        self.interp_combo.addItems(["Nearest", "Linear", "Cubic"])
+        self.interp_combo.setCurrentIndex(1)  # Default to linear
+        self.interp_combo.setToolTip("Interpolation method for scaling")
+        interp_layout.addWidget(self.interp_combo)
+        scaling_layout.addLayout(interp_layout)
+        
+        # Auto-update checkbox
+        self.auto_update_cb = QCheckBox("Auto-update on change")
+        self.auto_update_cb.setChecked(False)
+        self.auto_update_cb.setToolTip("Automatically apply scaling when values change")
+        scaling_layout.addWidget(self.auto_update_cb)
+        
+        # Control buttons
+        button_layout = QHBoxLayout()
+        
+        self.apply_scaling_btn = QPushButton("Apply Scaling")
+        self.apply_scaling_btn.setToolTip("Apply current scaling settings to reshape the image")
+        self.apply_scaling_btn.setFixedHeight(22)
+        self.apply_scaling_btn.clicked.connect(self._apply_scaling)
+        button_layout.addWidget(self.apply_scaling_btn)
+        
+        self.reset_scaling_btn = QPushButton("Reset to Original")
+        self.reset_scaling_btn.setToolTip("Reset to original voxel spacing")
+        self.reset_scaling_btn.setFixedHeight(22)
+        self.reset_scaling_btn.clicked.connect(self._reset_scaling)
+        button_layout.addWidget(self.reset_scaling_btn)
+        
+        scaling_layout.addLayout(button_layout)
+        
+        # Status info
+        self.scaling_status = QLabel("Status: Original spacing")
+        self.scaling_status.setWordWrap(True)
+        self.scaling_status.setStyleSheet("font-weight: bold; color: #0066cc;")
+        scaling_layout.addWidget(self.scaling_status)
+        
+        scaling_group.setLayout(scaling_layout)
+        layout.addWidget(scaling_group)
+        
+        # Update initial status
+        self._update_status_only()
+    
+    def _on_spacing_changed(self):
+        """Handle when spacing values change"""
+        if self.auto_update_cb.isChecked():
+            self._apply_scaling()
+        else:
+            self._update_status_only()
+            
+    def _update_status_only(self):
+        """Update status without applying scaling"""
+        x_nm = self.x_spacing_spin.value()
+        y_nm = self.y_spacing_spin.value() 
+        z_nm = self.z_spacing_spin.value()
+        
+        # Calculate what the scale factors would be
+        temp_scale_factors = np.array([
+            self.scaler.original_spacing_xyz[2] / z_nm,  # Z
+            self.scaler.original_spacing_xyz[1] / y_nm,  # Y
+            self.scaler.original_spacing_xyz[0] / x_nm   # X
+        ])
+        
+        self.scaling_status.setText(
+            f"Pending: X={x_nm:.1f}, Y={y_nm:.1f}, Z={z_nm:.1f} nm\n"
+            f"Scale factors (Z,Y,X): {temp_scale_factors[0]:.3f}, {temp_scale_factors[1]:.3f}, {temp_scale_factors[2]:.3f}"
+        )
+        
+    def _apply_scaling(self):
+        """Apply current scaling settings"""
+        try:
+            x_nm = self.x_spacing_spin.value()
+            y_nm = self.y_spacing_spin.value()
+            z_nm = self.z_spacing_spin.value()
+            
+            # Update scaler
+            self.scaler.set_spacing(x_nm, y_nm, z_nm)
+            
+            # Get interpolation order
+            interp_order = self.interp_combo.currentIndex()
+            if interp_order == 0:
+                order = 0  # Nearest
+            elif interp_order == 1:
+                order = 1  # Linear
+            else:
+                order = 3  # Cubic
+            
+            # Update status
+            volume_ratio = self.scaler.get_volume_ratio()
+            self.scaling_status.setText(
+                f"Applied: X={x_nm:.1f}, Y={y_nm:.1f}, Z={z_nm:.1f} nm\n"
+                f"Scale factors (Z,Y,X): {self.scaler.scale_factors[0]:.3f}, {self.scaler.scale_factors[1]:.3f}, {self.scaler.scale_factors[2]:.3f}\n"
+                f"Volume ratio: {volume_ratio:.3f}"
+            )
+            
+            # Call the main widget's scaling update callback
+            if self.scaling_update_callback:
+                self.scaling_update_callback(order)
+                
+            napari.utils.notifications.show_info(f"Applied anisotropic scaling: X={x_nm:.1f}, Y={y_nm:.1f}, Z={z_nm:.1f} nm")
+            
+        except Exception as e:
+            napari.utils.notifications.show_info(f"Error applying scaling: {str(e)}")
+            print(f"Scaling error: {str(e)}")
+            
+    def _reset_scaling(self):
+        """Reset to original scaling"""
+        self.scaler.reset_to_original()
+        
+        # Update UI
+        self.x_spacing_spin.setValue(self.scaler.current_spacing_xyz[0])
+        self.y_spacing_spin.setValue(self.scaler.current_spacing_xyz[1])
+        self.z_spacing_spin.setValue(self.scaler.current_spacing_xyz[2])
+        
+        self.scaling_status.setText("Status: Reset to original spacing")
+        
+        # Call the main widget's scaling update callback
+        if self.scaling_update_callback:
+            self.scaling_update_callback(1)  # Linear interpolation for reset
+            
+        napari.utils.notifications.show_info("Reset to original voxel spacing")
+    
+    def _update_spacing_display(self):
+        """Update the spacing display with current values"""
+        try:
+            if 'current_spacing_xyz' in self.state:
+                spacing = self.state['current_spacing_xyz']
+                self.spacing_info_label.setText(
+                    f"Current voxel spacing: X={spacing[0]:.1f}, Y={spacing[1]:.1f}, Z={spacing[2]:.1f} nm"
+                )
+            else:
+                self.spacing_info_label.setText("Current voxel spacing: Not configured")
+        except Exception as e:
+            self.spacing_info_label.setText("Current voxel spacing: Error reading values")
+            print(f"Error updating spacing display: {e}")
+    
     def activate_waypoints_layer(self):
         """Activate the waypoints layer for selecting points"""
         if self.handling_event:
@@ -302,6 +522,7 @@ class PathTracingWidget(QWidget):
             self.viewer.layers.selection.active = self.state['waypoints_layer']
             self.error_status.setText("")
             self.status_label.setText("Click points on the dendrite structure")
+            self._update_spacing_display()  # Update spacing display
             napari.utils.notifications.show_info("Click points on the dendrite")
         except Exception as e:
             error_msg = f"Error activating waypoints layer: {str(e)}"
@@ -348,7 +569,7 @@ class PathTracingWidget(QWidget):
                 self.find_path_btn.setEnabled(num_points >= 2)
                 
                 if num_points >= 2:
-                    self.status_label.setText("Ready to find path using fast algorithm!")
+                    self.status_label.setText("Ready to find path using anisotropic algorithm!")
                 else:
                     self.status_label.setText(f"Need at least 2 points (currently have {num_points})")
             else:
@@ -363,7 +584,7 @@ class PathTracingWidget(QWidget):
             self.handling_event = False
     
     def find_path(self):
-        """Find path using the fast waypoint A* algorithm with optional smoothing"""
+        """Find path using the fast waypoint A* algorithm with anisotropic smoothing"""
         if self.handling_event:
             return
             
@@ -377,7 +598,7 @@ class PathTracingWidget(QWidget):
             
             # Clear any previous error messages
             self.error_status.setText("")
-            self.status_label.setText("Finding path using fast algorithm...")
+            self.status_label.setText("Finding path using anisotropic algorithm...")
             
             # Convert clicked points to the format expected by the algorithm
             points_list = [point.tolist() for point in self.clicked_points]
@@ -385,7 +606,7 @@ class PathTracingWidget(QWidget):
             # Get algorithm settings
             enable_parallel = self.enable_parallel_cb.isChecked()
             
-            napari.utils.notifications.show_info("Finding brightest path with fast algorithm...")
+            napari.utils.notifications.show_info("Finding brightest path with anisotropic-aware algorithm...")
             
             # Use the fast waypoint A* algorithm
             path = quick_accurate_optimized_search(
@@ -400,23 +621,27 @@ class PathTracingWidget(QWidget):
                 # Convert path to numpy array
                 path_data = np.array(path)
                 
-                # Apply smoothing if enabled
+                # Apply anisotropic smoothing if enabled
                 if self.enable_smoothing_cb.isChecked() and len(path_data) >= 3:
                     smoothing_factor = self.smoothing_factor_spin.value()
                     
                     if smoothing_factor > 0:
-                        self.status_label.setText("Applying B-spline smoothing...")
+                        self.status_label.setText("Applying anisotropic B-spline smoothing...")
                         
-                        # Smooth the path using B-spline
+                        # Get current voxel spacing
+                        spacing_xyz = self.state.get('current_spacing_xyz', (1.0, 1.0, 1.0))
+                        
+                        # Smooth the path using anisotropic B-spline
                         smoothed_path = self.path_smoother.smooth_path(
                             path_data, 
+                            spacing_xyz=spacing_xyz,
                             smoothing_factor=smoothing_factor,
                             preserve_endpoints=True
                         )
                         
                         # Update path data
                         path_data = smoothed_path
-                        napari.utils.notifications.show_info("Applied B-spline smoothing")
+                        napari.utils.notifications.show_info("Applied anisotropic B-spline smoothing")
                 
                 # Generate path name
                 path_name = f"Path {self.next_path_number}"
@@ -441,7 +666,9 @@ class PathTracingWidget(QWidget):
                 # Generate a unique ID for this path
                 path_id = str(uuid.uuid4())
                 
-                # Store the path with enhanced metadata including pixel spacing
+                # Store the path with enhanced metadata including spacing
+                current_spacing = self.state.get('current_spacing_xyz', (1.0, 1.0, 1.0))
+                
                 self.state['paths'][path_id] = {
                     'name': path_name,
                     'data': path_data,
@@ -454,7 +681,8 @@ class PathTracingWidget(QWidget):
                     'smoothed': self.enable_smoothing_cb.isChecked() and self.smoothing_factor_spin.value() > 0,
                     'algorithm': 'waypoint_astar',
                     'parallel_processing': enable_parallel,
-                    'pixel_spacing_nm': self.pixel_spacing_spin.value()  # Store pixel spacing with path
+                    'voxel_spacing_xyz': current_spacing,  # Store voxel spacing with path
+                    'anisotropic_smoothing': self.enable_smoothing_cb.isChecked()
                 }
                 
                 # Store reference to the layer
@@ -462,10 +690,12 @@ class PathTracingWidget(QWidget):
                 
                 # Update UI
                 algorithm_info = " (parallel)" if enable_parallel else " (sequential)"
-                smoothing_msg = " (smoothed)" if self.state['paths'][path_id]['smoothed'] else ""
-                msg = f"Fast path found: {len(path_data)} points{algorithm_info}{smoothing_msg}"
+                smoothing_msg = " (anisotropic smoothing)" if self.state['paths'][path_id]['smoothed'] else ""
+                spacing_info = f" at {current_spacing[0]:.1f}, {current_spacing[1]:.1f}, {current_spacing[2]:.1f} nm"
+                
+                msg = f"Anisotropic path found: {len(path_data)} points{algorithm_info}{smoothing_msg}{spacing_info}"
                 napari.utils.notifications.show_info(msg)
-                self.status_label.setText(f"Success: {path_name} created with fast algorithm{smoothing_msg}")
+                self.status_label.setText(f"Success: {path_name} created with anisotropic algorithm{smoothing_msg}")
                 
                 # Enable trace another path button
                 self.trace_another_btn.setEnabled(True)
@@ -478,16 +708,16 @@ class PathTracingWidget(QWidget):
                     
             else:
                 # No path found
-                msg = "Could not find a path with fast algorithm"
+                msg = "Could not find a path with anisotropic algorithm"
                 napari.utils.notifications.show_info(msg)
                 self.error_status.setText("Error: No path found")
                 self.status_label.setText("Try selecting different points or adjusting parameters")
                 
         except Exception as e:
-            msg = f"Error in fast path finding: {e}"
+            msg = f"Error in anisotropic path finding: {e}"
             napari.utils.notifications.show_info(msg)
             self.error_status.setText(f"Error: {str(e)}")
-            print(f"Fast path finding error: {str(e)}")
+            print(f"Anisotropic path finding error: {str(e)}")
             import traceback
             traceback.print_exc()
         finally:
@@ -529,13 +759,16 @@ class PathTracingWidget(QWidget):
         
         # Reset UI for new path
         self.waypoints_status.setText("Status: Click to start selecting points")
-        self.status_label.setText("Ready for new path - click points on dendrite")
+        self.status_label.setText("Ready for new anisotropic path - click points on dendrite")
         self.find_path_btn.setEnabled(False)
         self.trace_another_btn.setEnabled(False)
         
+        # Update spacing display
+        self._update_spacing_display()
+        
         # Activate the waypoints layer for the new path
         self.viewer.layers.selection.active = self.state['waypoints_layer']
-        napari.utils.notifications.show_info("Ready to trace a new path. Click points on the dendrite.")
+        napari.utils.notifications.show_info("Ready to trace a new anisotropic path. Click points on the dendrite.")
     
     def clear_points(self):
         """Clear all waypoints and paths"""
@@ -556,7 +789,10 @@ class PathTracingWidget(QWidget):
         self.find_path_btn.setEnabled(False)
         self.trace_another_btn.setEnabled(False)
         
-        napari.utils.notifications.show_info("All points cleared. Ready to start over.")
+        # Update spacing display
+        self._update_spacing_display()
+        
+        napari.utils.notifications.show_info("All points cleared. Ready to start over with anisotropic scaling.")
     
     def get_next_color(self):
         """Get the next color from the predefined list"""
@@ -633,22 +869,32 @@ class PathTracingWidget(QWidget):
             # Clear any error messages
             self.error_status.setText("")
             
-            # Show path status including algorithm type
+            # Show path status including algorithm type and spacing info
             path_type = ""
             if path_data.get('algorithm') == 'waypoint_astar':
                 path_type = " (waypoint_astar"
                 if path_data.get('parallel_processing', False):
                     path_type += ", parallel"
                 path_type += ")"
-                if path_data.get('smoothed', False):
-                    path_type += " (smoothed)"
+                if path_data.get('anisotropic_smoothing', False):
+                    path_type += " (anisotropic smoothing)"
             elif path_data.get('smoothed', False):
                 path_type = " (smoothed)"
             elif ('original_clicks' in path_data and 
                   len(path_data['original_clicks']) == 0):
                 path_type = " (connected)"
             
+            # Add spacing info if available
+            if 'voxel_spacing_xyz' in path_data:
+                spacing = path_data['voxel_spacing_xyz']
+                spacing_info = f" [X={spacing[0]:.1f}, Y={spacing[1]:.1f}, Z={spacing[2]:.1f} nm]"
+                path_type += spacing_info
+            
             self.status_label.setText(f"Loaded path: {path_data['name']}{path_type}")
+            
+            # Update spacing display
+            self._update_spacing_display()
+            
             napari.utils.notifications.show_info(f"Loaded {path_data['name']}{path_type}")
         except Exception as e:
             error_msg = f"Error loading path waypoints: {str(e)}"
