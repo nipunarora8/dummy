@@ -243,6 +243,19 @@ class PathTracingWidget(QWidget):
         self.enable_parallel_cb.setToolTip("Use parallel processing for faster pathfinding")
         algorithm_layout.addWidget(self.enable_parallel_cb)
         
+        # Weight heuristic parameter
+        weight_heuristic_layout = QHBoxLayout()
+        weight_heuristic_layout.setSpacing(2)
+        weight_heuristic_layout.addWidget(QLabel("Weight Heuristic:"))
+        self.weight_heuristic_spin = QDoubleSpinBox()
+        self.weight_heuristic_spin.setRange(0.1, 10.0)
+        self.weight_heuristic_spin.setSingleStep(0.1)
+        self.weight_heuristic_spin.setValue(2.0)  # Default value
+        self.weight_heuristic_spin.setDecimals(1)
+        self.weight_heuristic_spin.setToolTip("Weight heuristic for A* search algorithm (higher = more heuristic-guided)")
+        weight_heuristic_layout.addWidget(self.weight_heuristic_spin)
+        algorithm_layout.addLayout(weight_heuristic_layout)
+        
         layout.addWidget(algorithm_section)
         
         # Smoothing controls section with anisotropic support
@@ -605,15 +618,17 @@ class PathTracingWidget(QWidget):
             
             # Get algorithm settings
             enable_parallel = self.enable_parallel_cb.isChecked()
+            weight_heuristic = self.weight_heuristic_spin.value()
             
             napari.utils.notifications.show_info("Finding brightest path with anisotropic-aware algorithm...")
             
-            # Use the fast waypoint A* algorithm
+            # Use the fast waypoint A* algorithm with weight heuristic parameter
             path = quick_accurate_optimized_search(
                 image=self.image,
                 points_list=points_list,
                 verbose=True,
-                enable_parallel=enable_parallel
+                enable_parallel=enable_parallel,
+                my_weight_heuristic=weight_heuristic
             )
             
             # Check if path was found
@@ -666,7 +681,7 @@ class PathTracingWidget(QWidget):
                 # Generate a unique ID for this path
                 path_id = str(uuid.uuid4())
                 
-                # Store the path with enhanced metadata including spacing
+                # Store the path with enhanced metadata including spacing and weight heuristic
                 current_spacing = self.state.get('current_spacing_xyz', (1.0, 1.0, 1.0))
                 
                 self.state['paths'][path_id] = {
@@ -681,6 +696,7 @@ class PathTracingWidget(QWidget):
                     'smoothed': self.enable_smoothing_cb.isChecked() and self.smoothing_factor_spin.value() > 0,
                     'algorithm': 'waypoint_astar',
                     'parallel_processing': enable_parallel,
+                    'weight_heuristic': weight_heuristic,  # Store weight heuristic parameter
                     'voxel_spacing_xyz': current_spacing,  # Store voxel spacing with path
                     'anisotropic_smoothing': self.enable_smoothing_cb.isChecked()
                 }
@@ -689,7 +705,7 @@ class PathTracingWidget(QWidget):
                 self.state['path_layers'][path_id] = path_layer
                 
                 # Update UI
-                algorithm_info = " (parallel)" if enable_parallel else " (sequential)"
+                algorithm_info = f" (parallel, weight={weight_heuristic:.1f})" if enable_parallel else f" (sequential, weight={weight_heuristic:.1f})"
                 smoothing_msg = " (anisotropic smoothing)" if self.state['paths'][path_id]['smoothed'] else ""
                 spacing_info = f" at {current_spacing[0]:.1f}, {current_spacing[1]:.1f}, {current_spacing[2]:.1f} nm"
                 
@@ -869,12 +885,15 @@ class PathTracingWidget(QWidget):
             # Clear any error messages
             self.error_status.setText("")
             
-            # Show path status including algorithm type and spacing info
+            # Show path status including algorithm type, weight heuristic, and spacing info
             path_type = ""
             if path_data.get('algorithm') == 'waypoint_astar':
                 path_type = " (waypoint_astar"
                 if path_data.get('parallel_processing', False):
                     path_type += ", parallel"
+                # Add weight heuristic info if available
+                if 'weight_heuristic' in path_data:
+                    path_type += f", weight={path_data['weight_heuristic']:.1f}"
                 path_type += ")"
                 if path_data.get('anisotropic_smoothing', False):
                     path_type += " (anisotropic smoothing)"

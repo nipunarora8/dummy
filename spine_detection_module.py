@@ -302,7 +302,7 @@ def process_all_frames_with_extension(tube_data, image, brightest_path, max_dist
                 # Check if this is likely a spine:
                 # 1. The spine location should be bright relative to background
                 # 2. It should be reasonably bright compared to local maximum
-                if (spine_intensity > background_intensity * 0.5 and 
+                if (spine_intensity > background_intensity * 0.25 and 
                     spine_intensity > local_max * 0.2):  # More permissive thresholds
                     
                     extended_spine = np.array([
