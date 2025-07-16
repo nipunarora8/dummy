@@ -51,6 +51,89 @@ class SpineSegmentationWidget(QWidget):
         else:
             print(f"Spine segmentation: Updated pixel spacing to {new_spacing:.1f} nm/pixel")
 
+    def get_manual_spine_points(self, path_name=None):
+        """
+        Get manually clicked spine points from points layers in the viewer.
+        This includes points added to existing spine layers or new point layers.
+        
+        Args:
+            path_name: Name of the current path to check its spine layer
+        """
+        manual_points = []
+        original_spine_positions = []
+        
+        # If we have a path name, check if there's an existing spine layer for this path
+        if path_name:
+            spine_layer_name = f"Spines - {path_name}"
+            for layer in self.viewer.layers:
+                if (hasattr(layer, 'name') and layer.name == spine_layer_name and 
+                    hasattr(layer, 'data') and len(layer.data) > 0):
+                    
+                    # Get the original spine positions from our stored data
+                    path_id = getattr(self, 'selected_path_id', None)
+                    if (path_id and 'spine_data' in self.state and 
+                        path_id in self.state['spine_data'] and 
+                        'original_positions' in self.state['spine_data'][path_id]):
+                        original_spine_positions = self.state['spine_data'][path_id]['original_positions']
+                        print(f"Found {len(original_spine_positions)} original spine positions for segmentation")
+                    
+                    # Check if current layer has more points than originally detected
+                    current_points = layer.data
+                    if len(current_points) > len(original_spine_positions):
+                        # Find new points that weren't in the original detection
+                        for point in current_points:
+                            point_coords = [point[0], point[1], point[2]]
+                            
+                            # Check if this point was in the original detection
+                            is_original = False
+                            for orig_point in original_spine_positions:
+                                # Allow small tolerance for floating point differences
+                                if (abs(point_coords[0] - orig_point[0]) < 0.1 and 
+                                    abs(point_coords[1] - orig_point[1]) < 0.1 and 
+                                    abs(point_coords[2] - orig_point[2]) < 0.1):
+                                    is_original = True
+                                    break
+                            
+                            if not is_original:
+                                manual_points.append(point_coords)
+                                print(f"Found new manual spine point for segmentation at {point_coords[0]:.1f}, {point_coords[1]:.1f}, {point_coords[2]:.1f}")
+                    
+                    break
+        
+        # Also check other points layers (excluding system layers)
+        for layer in self.viewer.layers:
+            if hasattr(layer, 'data') and hasattr(layer, 'name'):
+                # Check if it's a points layer with data
+                if (hasattr(layer, 'size') and  # This indicates it's a points layer
+                    len(layer.data) > 0 and 
+                    layer.data.ndim == 2 and 
+                    layer.data.shape[1] >= 3):  # At least 3D coordinates
+                    
+                    # Skip system layers and the spine layer we already processed
+                    skip_layer = False
+                    skip_names = ['Path', 'Point Selection', 'Traced Path']
+                    if path_name:
+                        skip_names.append(f"Spines - {path_name}")
+                    
+                    for skip_name in skip_names:
+                        if skip_name in layer.name:
+                            skip_layer = True
+                            break
+                    
+                    if skip_layer:
+                        continue
+                    
+                    # Include points from this layer
+                    for point in layer.data:
+                        # Ensure we have at least [z, y, x] coordinates
+                        if len(point) >= 3:
+                            manual_points.append([point[0], point[1], point[2]])
+                            print(f"Found manual spine point for segmentation at {point[0]:.1f}, {point[1]:.1f}, {point[2]:.1f} from layer '{layer.name}'")
+        
+        if manual_points:
+            print(f"Total manual spine points found for segmentation: {len(manual_points)}")
+        
+        return manual_points
     
     def setup_ui(self):
         """Create the UI panel with controls"""
@@ -61,7 +144,7 @@ class SpineSegmentationWidget(QWidget):
         
         # Title and instructions
         layout.addWidget(QLabel("<b>Spine Segmentation with SAMv2</b>"))
-        layout.addWidget(QLabel("1. Load spine segmentation model\n2. Select a path with detected spines\n3. Run spine segmentation"))
+        layout.addWidget(QLabel("1. Load spine segmentation model\n2. Select a path with detected spines\n3. Optionally add manual spine points\n4. Run spine segmentation"))
         layout.addWidget(QLabel("<i>Note: Spines use neon colors that contrast with their dendrite</i>"))
         
         separator1 = QFrame()
@@ -272,10 +355,14 @@ class SpineSegmentationWidget(QWidget):
                             has_spine_segmentation = True
                             break
                     
+                    # Check for manual points
+                    manual_points = self.get_manual_spine_points(path_name)
+                    manual_info = f" (+{len(manual_points)} manual points)" if manual_points else ""
+                    
                     if has_spine_segmentation:
-                        self.status_label.setText(f"Status: Path '{path_name}' already has spine segmentation")
+                        self.status_label.setText(f"Status: Path '{path_name}' already has spine segmentation{manual_info}")
                     else:
-                        self.status_label.setText(f"Status: Path '{path_name}' selected for spine segmentation")
+                        self.status_label.setText(f"Status: Path '{path_name}' selected for spine segmentation{manual_info}")
                     
                     # Show color info for this path
                     color_info = contrasting_color_manager.get_pair_info(path_id)
@@ -321,8 +408,12 @@ class SpineSegmentationWidget(QWidget):
             path_data = self.state['paths'][path_id]
             path_name = path_data['name']
             
+            # Get manually clicked spine points
+            manual_spine_points = self.get_manual_spine_points(path_name)
+            
             # Update UI
-            self.status_label.setText(f"Status: Running spine segmentation on {path_name}...")
+            manual_info = f" (including {len(manual_spine_points)} manual points)" if manual_spine_points else ""
+            self.status_label.setText(f"Status: Running spine segmentation on {path_name}{manual_info}...")
             self.segmentation_progress.setValue(10)
             self.run_segmentation_btn.setEnabled(False)
             
@@ -351,6 +442,22 @@ class SpineSegmentationWidget(QWidget):
                         spine_positions = layer.data
                         print(f"Using spine layer by name: {len(spine_positions)} spines")
                         break
+            
+            # Add manual spine points to the spine positions
+            if manual_spine_points and len(manual_spine_points) > 0:
+                if spine_positions is not None:
+                    # Convert to numpy array if needed
+                    if not isinstance(spine_positions, np.ndarray):
+                        spine_positions = np.array(spine_positions)
+                    
+                    # Add manual points to existing spine positions
+                    manual_array = np.array(manual_spine_points)
+                    spine_positions = np.vstack([spine_positions, manual_array])
+                    print(f"Added {len(manual_spine_points)} manual points to {len(spine_positions) - len(manual_spine_points)} detected spines")
+                else:
+                    # Only manual points available
+                    spine_positions = np.array(manual_spine_points)
+                    print(f"Using only {len(manual_spine_points)} manual spine points")
             
             if spine_positions is None or len(spine_positions) == 0:
                 napari.utils.notifications.show_info(f"No spine positions found for {path_name}")
@@ -457,12 +564,27 @@ class SpineSegmentationWidget(QWidget):
                 # Enable export button
                 self.export_spine_btn.setEnabled(True)
                 
-                # Update UI
+                # Update UI with manual point information
                 total_pixels = np.sum(binary_spine_masks)
-                self.results_label.setText(f"Results: Spine segmentation completed - {total_pixels} pixels segmented")
+                manual_count = len(manual_spine_points) if manual_spine_points else 0
+                detected_count = len(spine_positions) - manual_count
+                
+                result_text = f"Results: Spine segmentation completed - {total_pixels} pixels segmented"
+                if manual_count > 0:
+                    result_text += f"\nUsed {detected_count} detected + {manual_count} manual spine positions"
+                else:
+                    result_text += f"\nUsed {detected_count} detected spine positions"
+                
+                self.results_label.setText(result_text)
                 self.status_label.setText(f"Status: Spine segmentation completed for {path_name}")
                 
-                napari.utils.notifications.show_info(f"Spine segmentation completed for {path_name} with contrasting neon color")
+                # Create comprehensive notification
+                notification_msg = f"Spine segmentation completed for {path_name}"
+                if manual_count > 0:
+                    notification_msg += f" (including {manual_count} manual points)"
+                notification_msg += " with contrasting neon color"
+                
+                napari.utils.notifications.show_info(notification_msg)
                 
                 # Emit signal that spine segmentation is completed
                 self.spine_segmentation_completed.emit(path_id, spine_seg_layer_name)

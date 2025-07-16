@@ -11,6 +11,11 @@ sys.path.append('../path_tracing/brightest-path-lib')
 # Import the tube data generation
 from brightest_path_lib.visualization.tube_data import create_tube_data  # Now uses minimal version
 from skimage.feature import blob_log
+from skimage.segmentation import watershed
+from skimage.feature import peak_local_max
+from scipy.ndimage import distance_transform_edt, label, binary_erosion, gaussian_filter
+from skimage.filters import threshold_otsu
+from skimage.morphology import remove_small_objects
 
 
 def detect_spines_with_angles(tube_data, frame_index, 
@@ -159,15 +164,332 @@ def detect_spines_with_angles(tube_data, frame_index,
     }
 
 
-def process_all_frames_with_extension(tube_data, image, brightest_path, max_distance_threshold=15, 
-                                     frame_range=2, progress_callback=None):
+class SpineTracker:
+    """Smart spine tracker that uses intensity analysis and watershed segmentation"""
+    
+    def __init__(self, min_intensity_ratio=0.3, min_distance_separation=8):
+        self.min_intensity_ratio = min_intensity_ratio  # Minimum intensity ratio to background
+        self.min_distance_separation = min_distance_separation  # Minimum distance between spine centers
+        
+    def segment_spine_areas_with_watershed(self, image, spine_positions, window_size=20):
+        """
+        Use watershed segmentation to find spine areas around detected points
+        
+        Args:
+            image: 3D image volume
+            spine_positions: List of spine center positions [z, y, x]
+            window_size: Size of local window for watershed analysis
+            
+        Returns:
+            List of spine areas with segmentation masks
+        """
+        spine_areas = []
+        
+        print(f"Segmenting spine areas using watershed for {len(spine_positions)} positions...")
+        
+        for i, spine_pos in enumerate(spine_positions):
+            z, y, x = int(spine_pos[0]), int(spine_pos[1]), int(spine_pos[2])
+            
+            # Check bounds
+            if (z < 0 or z >= image.shape[0] or 
+                y < window_size or y >= image.shape[1] - window_size or
+                x < window_size or x >= image.shape[2] - window_size):
+                continue
+            
+            # Extract local region around spine
+            y_min, y_max = y - window_size, y + window_size
+            x_min, x_max = x - window_size, x + window_size
+            
+            local_region = image[z, y_min:y_max, x_min:x_max].astype(np.float32)
+            
+            # Apply slight smoothing to reduce noise
+            smoothed = gaussian_filter(local_region, sigma=0.8)
+            
+            # Create binary mask using Otsu thresholding
+            try:
+                threshold = threshold_otsu(smoothed)
+                binary_mask = smoothed > threshold
+            except:
+                # Fallback if Otsu fails
+                threshold = np.percentile(smoothed, 75)
+                binary_mask = smoothed > threshold
+            
+            # Remove small objects
+            binary_mask = remove_small_objects(binary_mask, min_size=10)
+            
+            if not np.any(binary_mask):
+                continue
+            
+            # Create distance transform for watershed
+            distance = distance_transform_edt(binary_mask)
+            
+            # Find local maxima as markers
+            local_maxima = peak_local_max(distance, min_distance=5, threshold_abs=0.3 * np.max(distance))
+            
+            if len(local_maxima) == 0:
+                continue
+            
+            # Create markers for watershed
+            markers = np.zeros_like(distance, dtype=int)
+            for j, (max_y, max_x) in enumerate(local_maxima):
+                if 0 <= max_y < markers.shape[0] and 0 <= max_x < markers.shape[1]:
+                    markers[max_y, max_x] = j + 1
+            
+            # Apply watershed
+            labels = watershed(-distance, markers, mask=binary_mask)
+            
+            # Find the label that contains our spine center
+            center_y, center_x = window_size, window_size  # Spine center in local coordinates
+            spine_label = labels[center_y, center_x]
+            
+            if spine_label > 0:
+                # Extract the spine area
+                spine_mask = (labels == spine_label)
+                
+                # Calculate spine properties
+                spine_area = np.sum(spine_mask)
+                
+                # Find spine boundary
+                eroded = binary_erosion(spine_mask)
+                boundary = spine_mask & ~eroded
+                
+                # Calculate spine metrics
+                centroid_y, centroid_x = np.mean(np.where(spine_mask), axis=1)
+                centroid_global_y = y_min + centroid_y
+                centroid_global_x = x_min + centroid_x
+                
+                spine_info = {
+                    'original_position': spine_pos,
+                    'centroid': np.array([z, centroid_global_y, centroid_global_x]),
+                    'area_pixels': spine_area,
+                    'local_mask': spine_mask,
+                    'boundary_mask': boundary,
+                    'local_region_coords': (y_min, y_max, x_min, x_max),
+                    'max_intensity': np.max(smoothed[spine_mask]),
+                    'mean_intensity': np.mean(smoothed[spine_mask]),
+                    'background_intensity': np.mean(smoothed[~binary_mask]) if np.any(~binary_mask) else 0
+                }
+                
+                spine_areas.append(spine_info)
+                
+                if i < 5:  # Print details for first few spines
+                    print(f"Spine {i}: area={spine_area} pixels, max_intensity={spine_info['max_intensity']:.2f}")
+        
+        print(f"Successfully segmented {len(spine_areas)} spine areas using watershed")
+        return spine_areas
+        
+    def analyze_spine_intensity_across_frames(self, image, spine_position, frame_range=3):
+        """
+        Analyze spine intensity across multiple frames to determine visibility
+        
+        Args:
+            image: 3D image volume
+            spine_position: [z, y, x] coordinates of spine
+            frame_range: Number of frames to check before/after
+            
+        Returns:
+            dict: Frame analysis results
+        """
+        z, y, x = int(spine_position[0]), int(spine_position[1]), int(spine_position[2])
+        results = {}
+        
+        # Check frames around the spine position
+        for z_offset in range(-frame_range, frame_range + 1):
+            target_z = z + z_offset
+            
+            # Check bounds
+            if target_z < 0 or target_z >= image.shape[0]:
+                continue
+                
+            if y < 0 or y >= image.shape[1] or x < 0 or x >= image.shape[2]:
+                continue
+            
+            # Analyze intensity in this frame
+            window_size = 4  # Slightly larger window for better analysis
+            y_min = max(0, y - window_size)
+            y_max = min(image.shape[1], y + window_size + 1)
+            x_min = max(0, x - window_size)
+            x_max = min(image.shape[2], x + window_size + 1)
+            
+            # Get spine region
+            spine_region = image[target_z, y_min:y_max, x_min:x_max]
+            if spine_region.size == 0:
+                continue
+            
+            # Get spine center intensity
+            center_y = min(window_size, y - y_min)
+            center_x = min(window_size, x - x_min)
+            spine_intensity = spine_region[center_y, center_x]
+            
+            # Get local maximum in spine region
+            local_max = np.max(spine_region)
+            
+            # Get background intensity (larger region)
+            bg_size = 12
+            bg_y_min = max(0, y - bg_size)
+            bg_y_max = min(image.shape[1], y + bg_size + 1)
+            bg_x_min = max(0, x - bg_size)
+            bg_x_max = min(image.shape[2], x + bg_size + 1)
+            
+            bg_region = image[target_z, bg_y_min:bg_y_max, bg_x_min:bg_x_max]
+            if bg_region.size == 0:
+                continue
+                
+            # Use 25th percentile as background (more robust than median)
+            background_intensity = np.percentile(bg_region, 25)
+            
+            # Calculate metrics
+            intensity_ratio = spine_intensity / (background_intensity + 1e-6)
+            local_prominence = spine_intensity / (local_max + 1e-6)
+            
+            results[target_z] = {
+                'intensity_ratio': intensity_ratio,
+                'local_prominence': local_prominence,
+                'spine_intensity': spine_intensity,
+                'background_intensity': background_intensity,
+                'is_visible': intensity_ratio > self.min_intensity_ratio and local_prominence > 0.3
+            }
+        
+        return results
+    
+    def create_spine_tracks_with_areas(self, initial_spines, image, frame_range=3):
+        """
+        Create spine tracks with watershed-based area segmentation
+        
+        Args:
+            initial_spines: List of initial spine detections
+            image: 3D image volume
+            frame_range: Number of frames to extend analysis
+            
+        Returns:
+            Tuple of (spine_positions, spine_areas)
+        """
+        print(f"Creating smart spine tracks with watershed areas for {len(initial_spines)} initial detections...")
+        
+        # Group spines by spatial proximity (same physical spine across frames)
+        spine_groups = self._group_spines_by_proximity(initial_spines)
+        print(f"Grouped {len(initial_spines)} detections into {len(spine_groups)} unique spines")
+        
+        final_spine_positions = []
+        all_spine_areas = []
+        
+        for group_id, spine_group in enumerate(spine_groups):
+            # Find the best representative position for this spine group
+            best_spine = self._find_best_spine_in_group(spine_group, image)
+            
+            # Analyze intensity across frames for this spine
+            intensity_analysis = self.analyze_spine_intensity_across_frames(
+                image, best_spine['position'], frame_range
+            )
+            
+            # Add spine positions only in frames where it's visible
+            visible_frames = [z for z, analysis in intensity_analysis.items() if analysis['is_visible']]
+            
+            if visible_frames:
+                print(f"Spine {group_id}: visible in frames {visible_frames}")
+                
+                # Create spine positions for visible frames
+                frame_positions = []
+                for frame_z in visible_frames:
+                    spine_pos = np.array([
+                        float(frame_z),
+                        float(best_spine['position'][1]),
+                        float(best_spine['position'][2])
+                    ])
+                    frame_positions.append(spine_pos)
+                    final_spine_positions.append(spine_pos)
+                
+                # Segment spine areas using watershed for this group
+                if frame_positions:
+                    spine_areas = self.segment_spine_areas_with_watershed(image, frame_positions)
+                    all_spine_areas.extend(spine_areas)
+        
+        print(f"Final spine tracking: {len(final_spine_positions)} spine positions with {len(all_spine_areas)} segmented areas")
+        return final_spine_positions, all_spine_areas
+    
+    def create_spine_tracks(self, initial_spines, image, frame_range=3):
+        """
+        Create spine tracks by analyzing intensity across frames and removing duplicates
+        
+        Args:
+            initial_spines: List of initial spine detections
+            image: 3D image volume
+            frame_range: Number of frames to extend analysis
+            
+        Returns:
+            List of spine positions with frame-specific visibility
+        """
+        positions, areas = self.create_spine_tracks_with_areas(initial_spines, image, frame_range)
+        return positions
+    
+    def _group_spines_by_proximity(self, spines, max_distance=15):
+        """Group spines that are likely the same physical spine"""
+        if not spines:
+            return []
+        
+        spine_positions = np.array([spine['position'] for spine in spines])
+        
+        # Calculate distances in Y-X plane (ignore Z for grouping)
+        yx_positions = spine_positions[:, 1:3]  # Only Y and X coordinates
+        
+        groups = []
+        used_indices = set()
+        
+        for i, spine in enumerate(spines):
+            if i in used_indices:
+                continue
+                
+            # Start a new group with this spine
+            current_group = [spine]
+            used_indices.add(i)
+            
+            # Find all other spines within max_distance in Y-X plane
+            for j, other_spine in enumerate(spines):
+                if j in used_indices:
+                    continue
+                    
+                # Calculate Y-X distance
+                yx_distance = np.linalg.norm(yx_positions[i] - yx_positions[j])
+                
+                if yx_distance <= max_distance:
+                    current_group.append(other_spine)
+                    used_indices.add(j)
+            
+            groups.append(current_group)
+        
+        return groups
+    
+    def _find_best_spine_in_group(self, spine_group, image):
+        """Find the best representative spine in a group (highest intensity)"""
+        best_spine = None
+        best_intensity = 0
+        
+        for spine in spine_group:
+            z, y, x = int(spine['position'][0]), int(spine['position'][1]), int(spine['position'][2])
+            
+            # Check bounds
+            if (0 <= z < image.shape[0] and 
+                0 <= y < image.shape[1] and 
+                0 <= x < image.shape[2]):
+                
+                intensity = image[z, y, x]
+                if intensity > best_intensity:
+                    best_intensity = intensity
+                    best_spine = spine
+        
+        return best_spine if best_spine is not None else spine_group[0]
+
+
+def process_all_frames_with_smart_tracking(tube_data, image, brightest_path, max_distance_threshold=15, 
+                                          frame_range=2, manual_spine_points=None, progress_callback=None):
     """
-    Process frames with spine detection and extend detected spines to neighboring frames.
+    Process frames with smart spine tracking that avoids duplicates and uses intensity analysis
     
     This function:
     1. Detects spines using tube data at specific frames along the path
-    2. For each detected spine, checks the same (y,x) position in neighboring frames
-    3. Adds spine positions in neighboring frames if intensity is sufficient
+    2. Groups spines that are likely the same physical spine
+    3. Analyzes intensity across frames to determine where each spine is visible
+    4. Returns final spine positions with smart frame assignment
     """
     # Fixed parameters (matching original code)
     detection_params = {
@@ -185,7 +507,7 @@ def process_all_frames_with_extension(tube_data, image, brightest_path, max_dist
     print("Detecting spines from tube data...")
     for frame_idx in range(total_frames):
         if progress_callback:
-            progress = int((frame_idx / total_frames) * 50)
+            progress = int((frame_idx / total_frames) * 40)
             progress_callback(progress, 100)
         
         results = detect_spines_with_angles(
@@ -219,114 +541,74 @@ def process_all_frames_with_extension(tube_data, image, brightest_path, max_dist
     initial_spine_count = len(initial_spine_positions)
     print(f"Initial detection: {initial_spine_count} spines found")
     
-    # Now extend each detected spine to neighboring frames
-    all_spine_positions = []
-    extended_count = 0
+    # Add manually clicked points to the initial spine positions
+    manual_count = 0
+    if manual_spine_points is not None and len(manual_spine_points) > 0:
+        print(f"Adding {len(manual_spine_points)} manually clicked spine points...")
+        for manual_point in manual_spine_points:
+            # Convert manual point to the same format as detected spines
+            spine_3d_position = {
+                'z': int(manual_point[0]),
+                'y': int(manual_point[1]),
+                'x': int(manual_point[2]),
+                'position': np.array([float(manual_point[0]), float(manual_point[1]), float(manual_point[2])])
+            }
+            initial_spine_positions.append(spine_3d_position)
+            manual_count += 1
+        print(f"Added {manual_count} manual spine points")
     
-    if initial_spine_count > 0 and frame_range > 0:
-        print(f"Extending spines to neighboring frames (±{frame_range} frames)...")
-        
-        # Track positions to avoid duplicates
-        position_set = set()
-        
-        # Add initial positions
-        for spine_data in initial_spine_positions:
-            pos = spine_data['position']
-            all_spine_positions.append(pos)
-            position_set.add((int(pos[0]), int(pos[1]), int(pos[2])))
-        
-        # Extend each spine to neighboring frames
-        for idx, spine_data in enumerate(initial_spine_positions):
-            if progress_callback:
-                progress = int(50 + (idx / initial_spine_count) * 50)
-                progress_callback(progress, 100)
-            
-            original_z = int(spine_data['z'])
-            spine_y = int(spine_data['y'])
-            spine_x = int(spine_data['x'])
-            
-            # Check neighboring frames at the same (y,x) position
-            for z_offset in range(-frame_range, frame_range + 1):
-                if z_offset == 0:  # Skip original frame
-                    continue
-                
-                target_z = original_z + z_offset
-                
-                # Check bounds
-                if target_z < 0 or target_z >= image.shape[0]:
-                    continue
-                
-                # Skip if position already exists
-                if (target_z, spine_y, spine_x) in position_set:
-                    continue
-                
-                # Check if coordinates are within image bounds
-                if spine_y < 0 or spine_y >= image.shape[1] or spine_x < 0 or spine_x >= image.shape[2]:
-                    continue
-                
-                # Define region around spine position
-                window_size = 3
-                y_min = max(0, spine_y - window_size)
-                y_max = min(image.shape[1], spine_y + window_size + 1)
-                x_min = max(0, spine_x - window_size)
-                x_max = min(image.shape[2], spine_x + window_size + 1)
-                
-                # Get intensities
-                region = image[target_z, y_min:y_max, x_min:x_max]
-                if region.size == 0:
-                    continue
-                
-                # Use the center pixel and its immediate neighbors
-                center_y = spine_y - y_min
-                center_x = spine_x - x_min
-                
-                # Get intensity at the exact spine location
-                spine_intensity = image[target_z, spine_y, spine_x]
-                
-                # Calculate local maximum in the region
-                local_max = np.max(region)
-                
-                # Background region (larger)
-                bg_size = 10
-                bg_y_min = max(0, spine_y - bg_size)
-                bg_y_max = min(image.shape[1], spine_y + bg_size + 1)
-                bg_x_min = max(0, spine_x - bg_size)
-                bg_x_max = min(image.shape[2], spine_x + bg_size + 1)
-                
-                bg_region = image[target_z, bg_y_min:bg_y_max, bg_x_min:bg_x_max]
-                if bg_region.size == 0:
-                    continue
-                
-                background_intensity = np.median(bg_region)  # Use median for more robust background
-                
-                # Check if this is likely a spine:
-                # 1. The spine location should be bright relative to background
-                # 2. It should be reasonably bright compared to local maximum
-                if (spine_intensity > background_intensity * 0.25 and 
-                    spine_intensity > local_max * 0.2):  # More permissive thresholds
-                    
-                    extended_spine = np.array([
-                        float(target_z),
-                        float(spine_y),
-                        float(spine_x)
-                    ])
-                    all_spine_positions.append(extended_spine)
-                    position_set.add((target_z, spine_y, spine_x))
-                    extended_count += 1
-    else:
-        # No extension requested or no initial spines
-        all_spine_positions = [spine_data['position'] for spine_data in initial_spine_positions]
+    if progress_callback:
+        progress_callback(50, 100)
     
-    # Convert to numpy array
-    if all_spine_positions:
-        final_positions = np.array(all_spine_positions)
+    # Use smart spine tracking with watershed areas
+    if len(initial_spine_positions) > 0:
+        print("Applying smart spine tracking with watershed area segmentation...")
+        
+        # Initialize spine tracker
+        spine_tracker = SpineTracker(
+            min_intensity_ratio=0.3,  # Minimum intensity ratio to background
+            min_distance_separation=8  # Minimum distance between spine centers
+        )
+        
+        # Create smart tracks with watershed areas
+        final_positions, spine_areas = spine_tracker.create_spine_tracks_with_areas(
+            initial_spine_positions, image, frame_range
+        )
+        
+        # Convert to numpy array
+        if final_positions:
+            final_positions = np.array(final_positions)
+        else:
+            final_positions = np.empty((0, 3))
+            
+        # Store spine area information
+        spine_area_info = {
+            'areas': spine_areas,
+            'total_spine_areas': len(spine_areas),
+            'avg_area_pixels': np.mean([area['area_pixels'] for area in spine_areas]) if spine_areas else 0,
+            'total_area_pixels': sum([area['area_pixels'] for area in spine_areas])
+        }
     else:
         final_positions = np.empty((0, 3))
+        spine_area_info = {'areas': [], 'total_spine_areas': 0, 'avg_area_pixels': 0, 'total_area_pixels': 0}
     
-    print(f"Extended detection: {extended_count} additional spine positions")
-    print(f"Total spine positions: {len(final_positions)}")
+    if progress_callback:
+        progress_callback(100, 100)
     
-    return final_positions, brightest_path, all_results
+    # Calculate final statistics
+    tracked_count = len(final_positions) - initial_spine_count if len(final_positions) > initial_spine_count else 0
+    
+    print(f"Smart tracking with watershed results:")
+    print(f"  Initial detections: {initial_spine_count}")
+    print(f"  Manual points: {manual_count}")
+    print(f"  Final spine positions: {len(final_positions)}")
+    print(f"  Watershed segmented areas: {spine_area_info['total_spine_areas']}")
+    print(f"  Total segmented area: {spine_area_info['total_area_pixels']} pixels")
+    if spine_area_info['avg_area_pixels'] > 0:
+        print(f"  Average spine area: {spine_area_info['avg_area_pixels']:.1f} pixels")
+    print(f"  Duplicates removed and smart frame assignment applied")
+    
+    return final_positions, brightest_path, all_results, spine_area_info
 
 
 class SpineDetectionWidget(QWidget):
@@ -357,9 +639,10 @@ class SpineDetectionWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         self.setLayout(layout)
         
-        layout.addWidget(QLabel("<b>Spine Detection</b>"))
-        layout.addWidget(QLabel("Uses tube-view of the data"))
-        layout.addWidget(QLabel("1. Select a segmented path\n2. Set parameters\n3. Click 'Detect Spines'"))
+        layout.addWidget(QLabel("<b>Smart Spine Detection</b>"))
+        layout.addWidget(QLabel("Intelligent spine tracking with intensity analysis"))
+        layout.addWidget(QLabel("1. Select a segmented path\n2. Set parameters\n3. Optionally click points to add manual spines\n4. Click 'Detect Spines'"))
+        layout.addWidget(QLabel("<i>Note: Avoids duplicate labels and uses intensity-based frame selection</i>"))
         
         separator1 = QFrame()
         separator1.setFrameShape(QFrame.HLine)
@@ -374,7 +657,7 @@ class SpineDetectionWidget(QWidget):
         layout.addWidget(self.path_list)
         
         # Parameters group
-        params_group = QGroupBox("Detection Parameters (in nanometers)")
+        params_group = QGroupBox("Smart Detection Parameters (in nanometers)")
         params_layout = QVBoxLayout()
         params_layout.setSpacing(2)
         params_layout.setContentsMargins(5, 5, 5, 5)
@@ -391,15 +674,27 @@ class SpineDetectionWidget(QWidget):
         max_distance_layout.addWidget(self.max_distance_spin)
         params_layout.addLayout(max_distance_layout)
         
-        # Frame range for extension
+        # Frame range for analysis
         frame_range_layout = QHBoxLayout()
-        frame_range_layout.addWidget(QLabel("Frame Extension:"))
+        frame_range_layout.addWidget(QLabel("Frame Analysis:"))
         self.frame_range_spin = QSpinBox()
-        self.frame_range_spin.setRange(0, 5)
+        self.frame_range_spin.setRange(1, 5)
         self.frame_range_spin.setValue(3)
-        self.frame_range_spin.setToolTip("Number of frames to check before/after each spine")
+        self.frame_range_spin.setToolTip("Number of frames to analyze for spine visibility (smart tracking)")
         frame_range_layout.addWidget(self.frame_range_spin)
         params_layout.addLayout(frame_range_layout)
+        
+        # Intensity threshold
+        intensity_layout = QHBoxLayout()
+        intensity_layout.addWidget(QLabel("Intensity Threshold:"))
+        self.intensity_threshold_spin = QDoubleSpinBox()
+        self.intensity_threshold_spin.setRange(0.1, 1.0)
+        self.intensity_threshold_spin.setSingleStep(0.05)
+        self.intensity_threshold_spin.setValue(0.3)
+        self.intensity_threshold_spin.setDecimals(2)
+        self.intensity_threshold_spin.setToolTip("Minimum intensity ratio to background for spine visibility")
+        intensity_layout.addWidget(self.intensity_threshold_spin)
+        params_layout.addLayout(intensity_layout)
         
         # Enable parallel processing
         self.enable_parallel_cb = QCheckBox("Enable Parallel Processing")
@@ -416,7 +711,7 @@ class SpineDetectionWidget(QWidget):
         layout.addWidget(separator2)
         
         # Detection button
-        self.detect_spines_btn = QPushButton("Detect Spines")
+        self.detect_spines_btn = QPushButton("Detect Spines (Smart)")
         self.detect_spines_btn.setFixedHeight(22)
         self.detect_spines_btn.clicked.connect(self.run_spine_detection)
         self.detect_spines_btn.setEnabled(False)
@@ -436,6 +731,90 @@ class SpineDetectionWidget(QWidget):
         self.status_label = QLabel("Status: Select a segmented path to begin")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+    
+    def get_manual_spine_points(self, path_name=None):
+        """
+        Get manually clicked spine points from points layers in the viewer.
+        This includes points added to existing spine layers or new point layers.
+        
+        Args:
+            path_name: Name of the current path to check its spine layer
+        """
+        manual_points = []
+        original_spine_positions = []
+        
+        # If we have a path name, check if there's an existing spine layer for this path
+        if path_name:
+            spine_layer_name = f"Spines - {path_name}"
+            for layer in self.viewer.layers:
+                if (hasattr(layer, 'name') and layer.name == spine_layer_name and 
+                    hasattr(layer, 'data') and len(layer.data) > 0):
+                    
+                    # Get the original spine positions from our stored data
+                    path_id = getattr(self, 'selected_path_id', None)
+                    if (path_id and 'spine_data' in self.state and 
+                        path_id in self.state['spine_data'] and 
+                        'original_positions' in self.state['spine_data'][path_id]):
+                        original_spine_positions = self.state['spine_data'][path_id]['original_positions']
+                        print(f"Found {len(original_spine_positions)} original spine positions")
+                    
+                    # Check if current layer has more points than originally detected
+                    current_points = layer.data
+                    if len(current_points) > len(original_spine_positions):
+                        # Find new points that weren't in the original detection
+                        for point in current_points:
+                            point_coords = [point[0], point[1], point[2]]
+                            
+                            # Check if this point was in the original detection
+                            is_original = False
+                            for orig_point in original_spine_positions:
+                                # Allow small tolerance for floating point differences
+                                if (abs(point_coords[0] - orig_point[0]) < 0.1 and 
+                                    abs(point_coords[1] - orig_point[1]) < 0.1 and 
+                                    abs(point_coords[2] - orig_point[2]) < 0.1):
+                                    is_original = True
+                                    break
+                            
+                            if not is_original:
+                                manual_points.append(point_coords)
+                                print(f"Found new manual spine point at {point_coords[0]:.1f}, {point_coords[1]:.1f}, {point_coords[2]:.1f}")
+                    
+                    break
+        
+        # Also check other points layers (excluding system layers)
+        for layer in self.viewer.layers:
+            if hasattr(layer, 'data') and hasattr(layer, 'name'):
+                # Check if it's a points layer with data
+                if (hasattr(layer, 'size') and  # This indicates it's a points layer
+                    len(layer.data) > 0 and 
+                    layer.data.ndim == 2 and 
+                    layer.data.shape[1] >= 3):  # At least 3D coordinates
+                    
+                    # Skip system layers and the spine layer we already processed
+                    skip_layer = False
+                    skip_names = ['Path', 'Point Selection', 'Traced Path']
+                    if path_name:
+                        skip_names.append(f"Spines - {path_name}")
+                    
+                    for skip_name in skip_names:
+                        if skip_name in layer.name:
+                            skip_layer = True
+                            break
+                    
+                    if skip_layer:
+                        continue
+                    
+                    # Include points from this layer
+                    for point in layer.data:
+                        # Ensure we have at least [z, y, x] coordinates
+                        if len(point) >= 3:
+                            manual_points.append([point[0], point[1], point[2]])
+                            print(f"Found manual spine point at {point[0]:.1f}, {point[1]:.1f}, {point[2]:.1f} from layer '{layer.name}'")
+        
+        if manual_points:
+            print(f"Total manual spine points found: {len(manual_points)}")
+        
+        return manual_points
     
     def update_path_list(self):
         """Update the path list with current paths"""
@@ -488,10 +867,14 @@ class SpineDetectionWidget(QWidget):
                     spine_layer_name = f"Spines - {path_name}"
                     has_spines = any(layer.name == spine_layer_name for layer in self.viewer.layers)
                     
+                    # Check for manual points
+                    manual_points = self.get_manual_spine_points(path_name)
+                    manual_info = f" (+{len(manual_points)} manual points)" if manual_points else ""
+                    
                     if has_spines:
-                        self.status_label.setText(f"Status: Path '{path_name}' already has spine detection")
+                        self.status_label.setText(f"Status: Path '{path_name}' ready for smart spine detection{manual_info}")
                     else:
-                        self.status_label.setText(f"Status: Path '{path_name}' selected for spine detection")
+                        self.status_label.setText(f"Status: Path '{path_name}' selected for smart spine detection{manual_info}")
                     
                     self.detect_spines_btn.setEnabled(True)
             else:
@@ -515,7 +898,7 @@ class SpineDetectionWidget(QWidget):
         self.update_path_list()
     
     def run_spine_detection(self):
-        """Run spine detection on the selected path"""
+        """Run smart spine detection on the selected path"""
         if not hasattr(self, 'selected_path_id'):
             napari.utils.notifications.show_info("Please select a path for spine detection")
             return
@@ -532,8 +915,12 @@ class SpineDetectionWidget(QWidget):
             path_name = path_data['name']
             brightest_path = np.array(path_data['data'])
             
+            # Get manually clicked spine points
+            manual_spine_points = self.get_manual_spine_points(path_name)
+            
             # Update UI
-            self.status_label.setText(f"Status: Running spine detection on {path_name}...")
+            manual_info = f" (including {len(manual_spine_points)} manual points)" if manual_spine_points else ""
+            self.status_label.setText(f"Status: Running smart spine detection on {path_name}{manual_info}...")
             self.detection_progress.setValue(10)
             self.detect_spines_btn.setEnabled(False)
             
@@ -554,6 +941,7 @@ class SpineDetectionWidget(QWidget):
             # Get parameters in nanometers
             max_distance_nm = self.max_distance_spin.value()
             frame_range = self.frame_range_spin.value()
+            intensity_threshold = self.intensity_threshold_spin.value()
             enable_parallel = self.enable_parallel_cb.isChecked()
             
             # Use fixed default values for FOV and zoom size (not user-configurable)
@@ -566,15 +954,20 @@ class SpineDetectionWidget(QWidget):
             fov_pixels = int(fov_nm / pixel_spacing)
             zoom_size_pixels = int(zoom_size_nm / pixel_spacing)
             
-            verbose = True  # Fix: Define verbose variable
+            verbose = True
             if verbose:
-                print(f"Pixel spacing: {pixel_spacing:.1f} nm/pixel")
-                print(f"Max distance: {max_distance_nm:.0f} nm = {max_distance_pixels} pixels")
-                print(f"Field of view: {fov_nm:.0f} nm = {fov_pixels} pixels (fixed)") 
-                print(f"Zoom size: {zoom_size_nm:.0f} nm = {zoom_size_pixels} pixels (fixed)")
+                print(f"Smart spine detection parameters:")
+                print(f"  Pixel spacing: {pixel_spacing:.1f} nm/pixel")
+                print(f"  Max distance: {max_distance_nm:.0f} nm = {max_distance_pixels} pixels")
+                print(f"  Frame analysis range: ±{frame_range} frames")
+                print(f"  Intensity threshold: {intensity_threshold:.2f}")
+                print(f"  Field of view: {fov_nm:.0f} nm = {fov_pixels} pixels (fixed)") 
+                print(f"  Zoom size: {zoom_size_nm:.0f} nm = {zoom_size_pixels} pixels (fixed)")
+                if manual_spine_points:
+                    print(f"  Manual spine points: {len(manual_spine_points)}")
             
             self.detection_progress.setValue(20)
-            napari.utils.notifications.show_info(f"Creating minimal tube data for {path_name}...")
+            napari.utils.notifications.show_info(f"Creating tube data for smart detection on {path_name}...")
             
             # Check if we have a pre-computed path to pass
             existing_path = brightest_path if brightest_path is not None else None
@@ -593,20 +986,21 @@ class SpineDetectionWidget(QWidget):
             )
             
             self.detection_progress.setValue(40)
-            napari.utils.notifications.show_info("Detecting spines and extending to neighboring frames...")
+            napari.utils.notifications.show_info("Running smart spine detection with watershed analysis...")
             
             # Progress callback
             def update_progress(current, total):
                 progress = int(40 + (current / total) * 50)
                 self.detection_progress.setValue(progress)
             
-            # Run detection with extension using pixel values
-            spine_positions, _, all_results = process_all_frames_with_extension(
+            # Run smart detection with watershed area analysis
+            spine_positions, _, all_results, spine_area_info = process_all_frames_with_smart_tracking(
                 tube_data=tube_data,
                 image=self.image,
                 brightest_path=brightest_path,
                 max_distance_threshold=max_distance_pixels,  # Use pixel value
                 frame_range=frame_range,
+                manual_spine_points=manual_spine_points,  # Pass manual points
                 progress_callback=update_progress
             )
             
@@ -639,27 +1033,43 @@ class SpineDetectionWidget(QWidget):
                 # Calculate statistics
                 initial_count = sum(r['num_confirmed_spines'] for r in all_results)
                 frames_with_spines = len([r for r in all_results if r['num_confirmed_spines'] > 0])
-                extended_count = len(spine_positions) - initial_count
+                manual_count = len(manual_spine_points) if manual_spine_points else 0
                 
-                # Update UI with memory optimization info and nanometer values
-                algorithm_info = f" (parallel, 97.4% memory reduction, {max_distance_nm:.0f}nm max distance)" if enable_parallel else f" (sequential, 97.4% memory reduction, {max_distance_nm:.0f}nm max distance)"
+                # Calculate unique spines (approximate by grouping nearby positions)
+                unique_spines = self._estimate_unique_spines(spine_positions)
+                
+                # Update UI with smart detection and watershed info
+                algorithm_info = f" (smart tracking, watershed areas)" if enable_parallel else f" (smart tracking, watershed, sequential)"
+                manual_info = f"Manual points: {manual_count}\n" if manual_count > 0 else ""
+                watershed_info = f"Watershed areas: {spine_area_info['total_spine_areas']}\n"
+                area_info = f"Total area: {spine_area_info['total_area_pixels']} pixels"
+                if spine_area_info['avg_area_pixels'] > 0:
+                    area_info += f", Avg: {spine_area_info['avg_area_pixels']:.1f} px"
+                area_info += "\n"
+                
                 self.results_label.setText(
-                    f"Results: {len(spine_positions)} total spine positions{algorithm_info}\n"
-                    f"Initial detection: {initial_count} spines\n"
-                    f"Extended positions: {extended_count}\n"
-                    f"Frames with initial spines: {frames_with_spines}\n"
-                    f"Detection parameters: Max distance={max_distance_nm:.0f}nm"
+                    f"Results: {len(spine_positions)} spine positions across frames{algorithm_info}\n"
+                    f"Initial detections: {initial_count} spines\n"
+                    f"{manual_info}"
+                    f"Estimated unique spines: {unique_spines}\n"
+                    f"{watershed_info}"
+                    f"{area_info}"
+                    f"Frames with detections: {frames_with_spines}\n"
+                    f"Intensity threshold: {intensity_threshold:.2f}, Frame analysis: ±{frame_range}\n"
+                    f"Smart features: duplicate removal, intensity analysis, watershed areas"
                 )
-                self.status_label.setText(f"Status: Spine detection completed for {path_name}")
+                self.status_label.setText(f"Status: Smart spine detection completed for {path_name}")
                 
-                # Store enhanced spine data
+                # Store enhanced spine data with smart tracking info
                 if 'spine_data' not in self.state:
                     self.state['spine_data'] = {}
                 
                 self.state['spine_data'][path_id] = {
                     'original_positions': spine_positions,
                     'all_results': all_results,
-                    'detection_method': 'memory_optimized_angle_based_extended',
+                    'spine_area_info': spine_area_info,  # Store watershed area data
+                    'manual_spine_points': manual_spine_points,  # Store manual points
+                    'detection_method': 'smart_intensity_based_tracking_with_watershed',
                     'parameters': {
                         'max_distance_nm': max_distance_nm,
                         'max_distance_pixels': max_distance_pixels,
@@ -668,24 +1078,40 @@ class SpineDetectionWidget(QWidget):
                         'zoom_size_nm': zoom_size_nm,
                         'zoom_size_pixels': zoom_size_pixels,
                         'frame_range': frame_range,
+                        'intensity_threshold': intensity_threshold,
                         'enable_parallel': enable_parallel,
-                        'pixel_spacing_nm': pixel_spacing
+                        'pixel_spacing_nm': pixel_spacing,
+                        'manual_points_count': manual_count,
+                        'estimated_unique_spines': unique_spines,
+                        'watershed_enabled': True,
+                        'total_spine_areas': spine_area_info['total_spine_areas'],
+                        'avg_spine_area_pixels': spine_area_info['avg_area_pixels']
                     }
                 }
                 
                 # Emit signal
                 self.spines_detected.emit(path_id, spine_positions.tolist())
                 
-                napari.utils.notifications.show_info(f"Detected {len(spine_positions)} spine positions for {path_name} using spine detection algorithm")
+                # Create comprehensive notification message
+                detection_msg = f"Smart detection with watershed completed: {len(spine_positions)} spine positions"
+                if unique_spines != len(spine_positions):
+                    detection_msg += f" ({unique_spines} unique spines)"
+                if spine_area_info['total_spine_areas'] > 0:
+                    detection_msg += f", {spine_area_info['total_spine_areas']} areas segmented"
+                if manual_count > 0:
+                    detection_msg += f" including {manual_count} manual points"
+                detection_msg += " - watershed areas, duplicates removed, intensity-based frame selection"
+                
+                napari.utils.notifications.show_info(detection_msg)
             else:
                 self.results_label.setText("Results: No spines detected")
                 self.status_label.setText(f"Status: No spines detected for {path_name}")
                 napari.utils.notifications.show_info("No spines detected")
         
         except Exception as e:
-            error_msg = f"Error during spine detection: {str(e)}"
+            error_msg = f"Error during smart spine detection: {str(e)}"
             self.status_label.setText(f"Status: {error_msg}")
-            self.results_label.setText("Results: Error during spine detection")
+            self.results_label.setText("Results: Error during smart spine detection")
             napari.utils.notifications.show_info(error_msg)
             print(f"Error details: {str(e)}")
             import traceback
@@ -693,6 +1119,39 @@ class SpineDetectionWidget(QWidget):
         finally:
             self.detection_progress.setValue(100)
             self.detect_spines_btn.setEnabled(True)
+    
+    def _estimate_unique_spines(self, spine_positions, distance_threshold=15):
+        """Estimate the number of unique spines by grouping nearby positions"""
+        if len(spine_positions) == 0:
+            return 0
+        
+        # Group positions that are close in Y-X space (same physical spine)
+        yx_positions = spine_positions[:, 1:3]  # Only Y and X coordinates
+        
+        unique_groups = []
+        used_indices = set()
+        
+        for i, pos in enumerate(yx_positions):
+            if i in used_indices:
+                continue
+            
+            # Start new group
+            current_group = [i]
+            used_indices.add(i)
+            
+            # Find nearby positions
+            for j, other_pos in enumerate(yx_positions):
+                if j in used_indices:
+                    continue
+                
+                distance = np.linalg.norm(pos - other_pos)
+                if distance <= distance_threshold:
+                    current_group.append(j)
+                    used_indices.add(j)
+            
+            unique_groups.append(current_group)
+        
+        return len(unique_groups)
     
     def update_pixel_spacing(self, new_spacing):
         """Update pixel spacing and recalculate default parameter values"""
@@ -707,7 +1166,7 @@ class SpineDetectionWidget(QWidget):
         # Update the UI values (only max distance, FOV and zoom are now fixed)
         self.max_distance_spin.setValue(new_max_distance_nm)
         
-        print(f"Spine detection: Updated to {new_spacing:.1f} nm/pixel")
+        print(f"Smart spine detection: Updated to {new_spacing:.1f} nm/pixel")
         print(f"  Max distance: {new_max_distance_nm:.0f} nm")
         print(f"  Field of view: {40 * new_spacing:.0f} nm (fixed)")
         print(f"  Zoom size: {40 * new_spacing:.0f} nm (fixed)")
