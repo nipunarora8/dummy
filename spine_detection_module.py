@@ -42,7 +42,7 @@ def detect_spines_with_angles(tube_data, frame_index,
     if mask_2d is None:
         subtracted_plane_2d = view_2d
     else:
-        subtracted_plane_2d = view_2d
+        subtracted_plane_2d = view_2d - mask_2d
         subtracted_plane_2d[subtracted_plane_2d < 0] = 0
     
     blobs_2d = blob_log(subtracted_plane_2d, 
@@ -59,7 +59,7 @@ def detect_spines_with_angles(tube_data, frame_index,
         colored_plane = np.rot90(colored_plane)
         if colored_plane.ndim == 3:
             colored_plane = np.mean(colored_plane, axis=-1)
-        subtracted_plane_tube = normal_plane
+        subtracted_plane_tube = normal_plane - colored_plane
         subtracted_plane_tube[subtracted_plane_tube < 0] = 0
     else:
         subtracted_plane_tube = normal_plane
@@ -493,9 +493,9 @@ def process_all_frames_with_smart_tracking(tube_data, image, brightest_path, max
     """
     # Fixed parameters (matching original code)
     detection_params = {
-        'min_sigma_2d': 4, 'max_sigma_2d': 12, 'threshold_2d': 0.03,
-        'min_sigma_tube': 4, 'max_sigma_tube': 10, 'threshold_tube': 0.02,
-        'angle_threshold': 25, 'angle_weight': 0.7
+        'min_sigma_2d': 4, 'max_sigma_2d': 12, 'threshold_2d': 0.04,
+        'min_sigma_tube': 4, 'max_sigma_tube': 10, 'threshold_tube': 0.025,
+        'angle_threshold': 25, 'angle_weight': 0.8
     }
     
     initial_spine_positions = []
