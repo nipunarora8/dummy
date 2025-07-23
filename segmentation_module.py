@@ -244,9 +244,9 @@ class SegmentationWidget(QWidget):
             # Initialize segmenter if not already done
             if self.segmenter is None:
                 self.segmenter = DendriteSegmenter(
-                    model_path="checkpoints/sam2.1_hiera_small.pt",
+                    model_path="../Fine-Tune-SAMv2/checkpoints/sam2.1_hiera_small.pt",
                     config_path="sam2.1_hiera_s.yaml",
-                    weights_path="results/samv2_small_2025-03-06-17-13-15/model_22500.torch"
+                    weights_path="../Fine-Tune-SAMv2/results/samv2_small_2025-03-06-17-13-15/model_22500.torch"
                 )
             
             # Load the model

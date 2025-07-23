@@ -2,13 +2,12 @@ import numpy as np
 import torch
 import cv2
 from matplotlib.path import Path
-from scipy.interpolate import splprep, splev
 
 
 class DendriteSegmenter:
     """Class for segmenting dendrites from 3D image volumes using SAM2"""
     
-    def __init__(self, model_path="checkpoints/sam2.1_hiera_small.pt", config_path="sam2.1_hiera_s.yaml", weights_path="results/samv2_small_2025-03-06-17-13-15/model_22500.torch", device="cpu"):
+    def __init__(self, model_path="../Fine-Tune-SAMv2/checkpoints/sam2.1_hiera_small.pt", config_path="sam2.1_hiera_s.yaml", weights_path="../Fine-Tune-SAMv2/results/samv2_small_2025-03-06-17-13-15/model_22500.torch", device="cpu"):
         """
         Initialize the segmenter.
         
@@ -32,6 +31,8 @@ class DendriteSegmenter:
             
             # Try importing first to catch import errors
             try:
+                import sys
+                sys.path.append('../Fine-Tune-SAMv2')
                 from sam2.build_sam import build_sam2
                 from sam2.sam2_image_predictor import SAM2ImagePredictor
                 print("Successfully imported SAM2 modules")
@@ -131,6 +132,86 @@ class DendriteSegmenter:
             
         return padded_image, (pad_h, pad_w), (h, w)
     
+    def create_boundary_around_path(self, path_points, min_distance=5, max_distance=15):
+        """
+        Create boundary around path points without spline interpolation
+        
+        Args:
+            path_points: List of (x, y) path coordinates
+            min_distance: Inner boundary distance
+            max_distance: Outer boundary distance
+            
+        Returns:
+            inner_path, outer_path: Path objects for boundary checking
+        """
+        if len(path_points) < 2:
+            return None, None
+            
+        points = np.array(path_points)
+        
+        # Create simplified boundary by expanding each point
+        inner_points = []
+        outer_points = []
+        
+        for i, (x, y) in enumerate(points):
+            # Calculate local direction (simplified approach)
+            if i == 0 and len(points) > 1:
+                # Use direction to next point
+                dx, dy = points[i+1] - points[i]
+            elif i == len(points) - 1:
+                # Use direction from previous point
+                dx, dy = points[i] - points[i-1]
+            else:
+                # Use average direction
+                dx1, dy1 = points[i] - points[i-1]
+                dx2, dy2 = points[i+1] - points[i]
+                dx, dy = (dx1 + dx2) / 2, (dy1 + dy2) / 2
+            
+            # Normalize direction
+            length = np.sqrt(dx**2 + dy**2)
+            if length > 0:
+                dx, dy = dx / length, dy / length
+            else:
+                dx, dy = 1, 0
+                
+            # Perpendicular directions
+            nx, ny = -dy, dx
+            
+            # Create boundary points
+            inner_points.extend([
+                (x + nx * min_distance, y + ny * min_distance),
+                (x - nx * min_distance, y - ny * min_distance)
+            ])
+            
+            outer_points.extend([
+                (x + nx * max_distance, y + ny * max_distance),
+                (x - nx * max_distance, y - ny * max_distance)
+            ])
+        
+        # Create convex hull for smoother boundaries
+        from scipy.spatial import ConvexHull
+        
+        try:
+            if len(inner_points) >= 3:
+                inner_hull = ConvexHull(inner_points)
+                inner_boundary = np.array(inner_points)[inner_hull.vertices]
+                inner_path = Path(inner_boundary)
+            else:
+                inner_path = None
+                
+            if len(outer_points) >= 3:
+                outer_hull = ConvexHull(outer_points)
+                outer_boundary = np.array(outer_points)[outer_hull.vertices]
+                outer_path = Path(outer_boundary)
+            else:
+                outer_path = None
+                
+            return inner_path, outer_path
+            
+        except Exception as e:
+            print(f"Boundary creation failed: {e}")
+            return None, None
+    
     def process_frame(self, frame_idx, image, brightest_path, patch_size=128):
         """
         Process a single frame with patches
@@ -180,14 +261,20 @@ class DendriteSegmenter:
                     if f[0] == frame_idx and a <= f[1] < b and c <= f[2] < d:
                         current_frame_points.append(f)
                         
+                total_frames_in_path = [i[0] for i in brightest_path] 
+
+                frame_min, frame_max = int(min(total_frames_in_path)), int(max(total_frames_in_path))
+
                 # Find points in nearby frames
                 nearby_frame_points = []
-                frame_range = 3  # Look 3 frames before and after
+                frame_range = 4
                 for f_idx in range(len(brightest_path)):
                     f = brightest_path[f_idx]
                     if (frame_idx - frame_range <= f[0] <= frame_idx + frame_range and
                         a <= f[1] < b and c <= f[2] < d):
-                        nearby_frame_points.append(f)
+                        intensity = image[round(f[0]), round(f[1]), round(f[2])]
+                        if intensity > 0.1:
+                            nearby_frame_points.append(f)
                         
                 # Combine unique points
                 all_points = current_frame_points.copy()
@@ -199,7 +286,7 @@ class DendriteSegmenter:
                             break
                     if not spatial_match:
                         all_points.append(point)
-                        
+                
                 # Only process if we have enough points
                 if len(all_points) >= 3:
                     patches_processed += 1
@@ -221,62 +308,29 @@ class DendriteSegmenter:
                     negative_points = []  # Points in the boundary region (background)
                     
                     if len(path_x) >= 3:
-                        # Convert to numpy arrays for processing
-                        points = np.column_stack([path_x, path_y])
+                        # Convert to (x, y) format for boundary creation
+                        path_points_xy = list(zip(path_x, path_y))
                         
-                        # Smooth the path with a spline
-                        k = min(3, len(points)-1)
-                        try:
-                            tck, u = splprep([points[:, 0], points[:, 1]], s=0, k=k)
+                        # Sample positive points along the path
+                        if len(path_points_xy) <= 20:
+                            positive_points = path_points_xy
+                        else:
+                            indices = np.linspace(0, len(path_points_xy)-1, 20, dtype=int)
+                            positive_points = [path_points_xy[i] for i in indices]
+                        
+                        # Create boundary around the path
+                        inner_path, outer_path = self.create_boundary_around_path(
+                            path_points_xy, min_distance, max_distance
+                        )
+                        
+                        # Generate negative points
+                        if inner_path is not None and outer_path is not None:
+                            # Find bounding box of outer boundary
+                            outer_vertices = outer_path.vertices
+                            min_x, max_x = np.min(outer_vertices[:, 0]), np.max(outer_vertices[:, 0])
+                            min_y, max_y = np.min(outer_vertices[:, 1]), np.max(outer_vertices[:, 1])
                             
-                            # Generate more points along the spline
-                            u_new = np.linspace(0, 1, 100)
-                            smooth_x, smooth_y = splev(u_new, tck)
-                            
-                            # Calculate normals to the path
-                            dx = np.gradient(smooth_x)
-                            dy = np.gradient(smooth_y)
-                            
-                            # Normalize vectors and find perpendicular
-                            path_length = np.sqrt(dx**2 + dy**2)
-                            dx = dx / (path_length + 1e-8)  # Avoid division by zero
-                            dy = dy / (path_length + 1e-8)
-                            
-                            # Perpendicular vectors
-                            nx, ny = -dy, dx
-                            
-                            # Get equidistant points along the path for positive points
-                            indices = np.linspace(0, len(smooth_x)-1, 20, dtype=int)
-                            for idx in indices:
-                                positive_points.append((smooth_x[idx], smooth_y[idx]))
-                            
-                            # Create distance arrays 
-                            inner_buffer_x = smooth_x + nx * min_distance
-                            inner_buffer_y = smooth_y + ny * min_distance
-                            outer_buffer_x = smooth_x + nx * max_distance
-                            outer_buffer_y = smooth_y + ny * max_distance
-                            
-                            inner_buffer_x_lower = smooth_x - nx * min_distance
-                            inner_buffer_y_lower = smooth_y - ny * min_distance
-                            outer_buffer_x_lower = smooth_x - nx * max_distance
-                            outer_buffer_y_lower = smooth_y - ny * max_distance
-                            
-                            # Create polygons for the inner and outer boundaries
-                            inner_boundary_x = np.concatenate([inner_buffer_x, inner_buffer_x_lower[::-1]])
-                            inner_boundary_y = np.concatenate([inner_buffer_y, inner_buffer_y_lower[::-1]])
-                            
-                            outer_boundary_x = np.concatenate([outer_buffer_x, outer_buffer_x_lower[::-1]])
-                            outer_boundary_y = np.concatenate([outer_buffer_y, outer_buffer_y_lower[::-1]])
-                            
-                            # Create Path objects for checking point containment
-                            inner_path = Path(np.column_stack([inner_boundary_x, inner_boundary_y]))
-                            outer_path = Path(np.column_stack([outer_boundary_x, outer_boundary_y]))
-                            
-                            # Find the min/max coordinates of the outer boundary
-                            min_x, max_x = np.min(outer_boundary_x), np.max(outer_boundary_x)
-                            min_y, max_y = np.min(outer_boundary_y), np.max(outer_boundary_y)
-                            
-                            # Generate random points within the boundary range
+                            # Generate random points in the boundary region
                             neg_count = 0
                             max_attempts = 1000
                             attempts = 0
@@ -284,29 +338,21 @@ class DendriteSegmenter:
                             while neg_count < 10 and attempts < max_attempts:
                                 rand_x = np.random.uniform(min_x, max_x)
                                 rand_y = np.random.uniform(min_y, max_y)
+                                
+                                # Check bounds
                                 if rand_x < 1 or rand_y < 1 or rand_x > patch_size-1 or rand_y > patch_size-1:
                                     attempts += 1
                                     continue
                                 
-                                # Check if point is between the inner and outer boundaries
-                                if outer_path.contains_point((rand_x, rand_y)) and not inner_path.contains_point((rand_x, rand_y)):
+                                # Check if point is between boundaries
+                                if (outer_path.contains_point((rand_x, rand_y)) and 
+                                    not inner_path.contains_point((rand_x, rand_y))):
                                     negative_points.append((rand_x, rand_y))
                                     neg_count += 1
                                 
                                 attempts += 1
-                                
-                        except Exception as e:
-                            print(f"Spline interpolation failed: {e}")
-                            # Fallback: sample from original points with distance constraints
-                            
-                            # Select points from original path
-                            if len(path_x) <= 20:
-                                positive_points = list(zip(path_x, path_y))
-                            else:
-                                indices = np.linspace(0, len(path_x)-1, 20, dtype=int)
-                                positive_points = [(path_x[i], path_y[i]) for i in indices]
-                            
-                            # Generate negative points
+                        else:
+                            # Fallback: generate negative points around positive points
                             for _ in range(10):
                                 idx = np.random.randint(0, len(positive_points))
                                 px, py = positive_points[idx]
