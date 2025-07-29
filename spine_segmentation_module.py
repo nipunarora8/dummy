@@ -261,9 +261,9 @@ class SpineSegmentationWidget(QWidget):
             # Initialize segmenter if not already done
             if self.spine_segmenter is None:
                 self.spine_segmenter = SpineSegmenter(
-                    model_path="checkpoints/sam2.1_hiera_small.pt",
+                    model_path="../Fine-Tune-SAMv2/checkpoints/sam2.1_hiera_small.pt",
                     config_path="sam2.1_hiera_s.yaml",
-                    weights_path="results/samv2_spines_small_2025-06-04-11-08-36/spine_model_58000.torch",
+                    weights_path="../Fine-Tune-SAMv2/results/samv2_spines_small_2025-06-04-11-08-36/spine_model_58000.torch",
                     device="cuda" if torch.cuda.is_available() else "cpu"
                 )
             
