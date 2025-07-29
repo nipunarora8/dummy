@@ -16,6 +16,7 @@ from skimage.feature import peak_local_max
 from scipy.ndimage import distance_transform_edt, label, binary_erosion, gaussian_filter
 from skimage.filters import threshold_otsu
 from skimage.morphology import remove_small_objects
+import skimage as ski
 
 
 def detect_spines_with_angles(tube_data, frame_index, 
@@ -38,6 +39,8 @@ def detect_spines_with_angles(tube_data, frame_index,
     # === 2D VIEW PROCESSING ===
     view_2d = frame_data['zoom_patch']
     mask_2d = frame_data['zoom_patch_ref']
+    footprint = ski.morphology.disk(1)
+    mask_2d = ski.morphology.dilation(mask_2d, footprint)
     
     if mask_2d is None:
         subtracted_plane_2d = view_2d
@@ -54,6 +57,8 @@ def detect_spines_with_angles(tube_data, frame_index,
     # === TUBULAR VIEW PROCESSING ===
     normal_plane = np.rot90(frame_data['normal_plane'])
     colored_plane = frame_data['colored_plane']
+    # footprint = ski.morphology.disk(1)
+    # colored_plane = ski.morphology.dilation(colored_plane, footprint)
     
     if colored_plane is not None:
         colored_plane = np.rot90(colored_plane)
@@ -215,7 +220,7 @@ class SpineTracker:
                 binary_mask = smoothed > threshold
             
             # Remove small objects
-            binary_mask = remove_small_objects(binary_mask, min_size=10)
+            binary_mask = remove_small_objects(binary_mask, min_size=5)
             
             if not np.any(binary_mask):
                 continue
@@ -495,7 +500,7 @@ def process_all_frames_with_smart_tracking(tube_data, image, brightest_path, max
     detection_params = {
         'min_sigma_2d': 4, 'max_sigma_2d': 12, 'threshold_2d': 0.04,
         'min_sigma_tube': 4, 'max_sigma_tube': 10, 'threshold_tube': 0.025,
-        'angle_threshold': 25, 'angle_weight': 0.8
+        'angle_threshold': 25, 'angle_weight': 0.5
     }
     
     initial_spine_positions = []
@@ -523,12 +528,13 @@ def process_all_frames_with_smart_tracking(tube_data, image, brightest_path, max
             z = results['actual_z']  # Use the actual Z from results
             y_base = frame_position[1]
             x_base = frame_position[2]
+            frame_shape_x, frame_shape_y = tube_data[frame_idx]['zoom_patch'].shape
             
             for spine in results['confirmed_spines']:
                 coord_x, coord_y = spine['coords_2d']
                 # Calculate absolute position in the full image
-                spine_y = y_base - 20 + coord_y
-                spine_x = x_base - 20 + coord_x
+                spine_y = y_base - int(frame_shape_y/2) + coord_y
+                spine_x = x_base - int(frame_shape_x/2) + coord_x
                 
                 spine_3d_position = {
                     'z': z,
@@ -945,14 +951,17 @@ class SpineDetectionWidget(QWidget):
             enable_parallel = self.enable_parallel_cb.isChecked()
             
             # Use fixed default values for FOV and zoom size (not user-configurable)
-            fov_nm = 3760.0  # Fixed at 3760 nm (40 pixels × 94 nm/pixel default)
-            zoom_size_nm = 3760.0  # Fixed at 3760 nm (40 pixels × 94 nm/pixel default)
+            fov_nm = 50  # Fixed at 3760 nm (40 pixels × 94 nm/pixel default)
+            zoom_size_nm = 40  # Fixed at 3760 nm (40 pixels × 94 nm/pixel default)
             
             # Convert nanometers to pixels using current pixel spacing
             pixel_spacing = self.pixel_spacing_nm
             max_distance_pixels = int(max_distance_nm / pixel_spacing)
-            fov_pixels = int(fov_nm / pixel_spacing)
-            zoom_size_pixels = int(zoom_size_nm / pixel_spacing)
+            # fov_pixels = int(fov_nm / pixel_spacing)
+            # zoom_size_pixels = int(zoom_size_nm / pixel_spacing)
+
+            fov_pixels = fov_nm
+            zoom_size_pixels = zoom_size_nm
             
             verbose = True
             if verbose:
