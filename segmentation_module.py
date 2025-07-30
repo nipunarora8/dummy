@@ -3,10 +3,10 @@ import numpy as np
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, 
     QHBoxLayout, QFrame, QListWidget, QListWidgetItem,
-    QProgressBar, QCheckBox, QSpinBox
+    QProgressBar, QCheckBox, QSpinBox, QGroupBox
 )
 from qtpy.QtCore import Signal
-from segmentation_model import DendriteSegmenter
+from segmentation_model import DendriteSegmenter  # Now with overlapping patches
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -14,13 +14,13 @@ from contrasting_color_system import contrasting_color_manager
 
 
 class SegmentationWidget(QWidget):
-    """Widget for performing segmentation on brightest paths"""
+    """Widget for performing dendrite segmentation on brightest paths using overlapping patches"""
     
     # Define signals
     segmentation_completed = Signal(str, str)  # path_id, layer_name
     
     def __init__(self, viewer, image, state):
-        """Initialize the segmentation widget.
+        """Initialize the segmentation widget with overlapping patches.
         
         Parameters:
         -----------
@@ -50,26 +50,25 @@ class SegmentationWidget(QWidget):
     def update_pixel_spacing(self, new_spacing):
         """Update pixel spacing for segmentation module"""
         self.pixel_spacing_nm = new_spacing
-        print(f"Segmentation: Updated pixel spacing to {new_spacing:.1f} nm/pixel")
+        print(f"Overlapping patches dendrite segmentation: Updated pixel spacing to {new_spacing:.1f} nm/pixel")
     
     def setup_ui(self):
-        """Create the UI panel with controls"""
+        """Create the UI panel with overlapping patches controls"""
         layout = QVBoxLayout()
         layout.setSpacing(2)
         layout.setContentsMargins(2, 2, 2, 2)
         self.setLayout(layout)
         
         # Model settings
-        layout.addWidget(QLabel("<b>Dendrite Segmentation</b>"))
+        layout.addWidget(QLabel("<b>Dendrite Segmentation with Overlapping Patches</b>"))
         layout.addWidget(QLabel("1. Load Segmentation Model\n2. Choose the path you want to segment\n3. Click on Run Segmentation to Segment"))
-        layout.addWidget(QLabel("<i>Note: Each dendrite gets a unique color with contrasting spine colors</i>"))
+        layout.addWidget(QLabel("<i>Note: Uses 50% overlapping patches + tubular dendrite enhancement</i>"))
         
         # Model paths
-        model_section = QWidget()
+        model_section = QGroupBox("Model Configuration")
         model_layout = QVBoxLayout()
         model_layout.setSpacing(2)
-        model_layout.setContentsMargins(2, 2, 2, 2)
-        model_section.setLayout(model_layout)
+        model_layout.setContentsMargins(5, 5, 5, 5)
         
         model_layout.addWidget(QLabel("Model Paths:"))
         self.model_path_edit = QLabel("SAM2 Model: checkpoints/sam2.1_hiera_small.pt")
@@ -81,6 +80,7 @@ class SegmentationWidget(QWidget):
         self.weights_path_edit = QLabel("Weights: results/samv2_small_2025-03-06-17-13-15/model_22500.torch")
         model_layout.addWidget(self.weights_path_edit)
         
+        model_section.setLayout(model_layout)
         layout.addWidget(model_section)
 
         # Add separator
@@ -96,12 +96,11 @@ class SegmentationWidget(QWidget):
         self.path_list.itemSelectionChanged.connect(self.on_path_selection_changed)
         layout.addWidget(self.path_list)
         
-        # Segmentation parameters
-        params_section = QWidget()
+        # Overlapping patches parameters
+        params_section = QGroupBox("Overlapping Patches Parameters")
         params_layout = QVBoxLayout()
         params_layout.setSpacing(2)
-        params_layout.setContentsMargins(2, 2, 2, 2)
-        params_section.setLayout(params_layout)
+        params_layout.setContentsMargins(5, 5, 5, 5)
         
         params_layout.addWidget(QLabel("Segmentation Parameters:"))
         
@@ -111,17 +110,42 @@ class SegmentationWidget(QWidget):
         patch_size_layout.setContentsMargins(2, 2, 2, 2)
         patch_size_layout.addWidget(QLabel("Patch Size:"))
         self.patch_size_spin = QSpinBox()
-        self.patch_size_spin.setRange(32, 512)
+        self.patch_size_spin.setRange(64, 256)
         self.patch_size_spin.setSingleStep(32)
-        self.patch_size_spin.setValue(128)
+        self.patch_size_spin.setValue(128)  # Keep proven 128x128
+        self.patch_size_spin.setToolTip("Size of overlapping patches (128x128 recommended)")
         patch_size_layout.addWidget(self.patch_size_spin)
         params_layout.addLayout(patch_size_layout)
+        
+        # Dendrite structure enhancement
+        self.enhance_dendrite_cb = QCheckBox("Enhance Tubular Dendrite Structure")
+        self.enhance_dendrite_cb.setChecked(True)
+        self.enhance_dendrite_cb.setToolTip("Apply morphological operations to connect dendrite segments and make tubular structure")
+        params_layout.addWidget(self.enhance_dendrite_cb)
+        
+        # Minimum dendrite size for noise removal
+        min_size_layout = QHBoxLayout()
+        min_size_layout.addWidget(QLabel("Min Dendrite Size (pixels):"))
+        self.min_dendrite_size_spin = QSpinBox()
+        self.min_dendrite_size_spin.setRange(50, 500)
+        self.min_dendrite_size_spin.setValue(100)
+        self.min_dendrite_size_spin.setToolTip("Minimum size of dendrite objects to keep (removes noise)")
+        min_size_layout.addWidget(self.min_dendrite_size_spin)
+        params_layout.addLayout(min_size_layout)
         
         # Frame range
         self.use_full_volume_cb = QCheckBox("Process Full Volume")
         self.use_full_volume_cb.setChecked(False)
+        self.use_full_volume_cb.setToolTip("Process entire volume instead of just path range")
         params_layout.addWidget(self.use_full_volume_cb)
         
+        # Processing method info
+        method_info = QLabel("Method: 50% overlapping patches (stride=64) with adaptive merging\n→ Eliminates boundary artifacts + tubular dendrite enhancement")
+        method_info.setWordWrap(True)
+        method_info.setStyleSheet("color: #0066cc; font-style: italic;")
+        params_layout.addWidget(method_info)
+        
+        params_section.setLayout(params_layout)
         layout.addWidget(params_section)
         
         # Add separator
@@ -131,12 +155,12 @@ class SegmentationWidget(QWidget):
         layout.addWidget(separator2)
         
         # Load model and run segmentation buttons
-        self.load_model_btn = QPushButton("Load Segmentation Model")
+        self.load_model_btn = QPushButton("Load Overlapping Patches Segmentation Model")
         self.load_model_btn.setFixedHeight(22)
         self.load_model_btn.clicked.connect(self.load_segmentation_model)
         layout.addWidget(self.load_model_btn)
         
-        self.run_segmentation_btn = QPushButton("Run Segmentation")
+        self.run_segmentation_btn = QPushButton("Run Overlapping Patches Segmentation")
         self.run_segmentation_btn.setFixedHeight(22)
         self.run_segmentation_btn.clicked.connect(self.run_segmentation)
         self.run_segmentation_btn.setEnabled(False)  # Disabled until model is loaded
@@ -209,7 +233,19 @@ class SegmentationWidget(QWidget):
                     # Store the selected path ID for segmentation
                     self.selected_path_id = path_id
                     path_name = self.state['paths'][path_id]['name']
-                    self.status_label.setText(f"Status: Path '{path_name}' selected for segmentation")
+                    
+                    # Check if this path already has segmentation
+                    seg_layer_name = f"Segmentation - {path_name}"
+                    has_segmentation = False
+                    for layer in self.viewer.layers:
+                        if layer.name == seg_layer_name:
+                            has_segmentation = True
+                            break
+                    
+                    if has_segmentation:
+                        self.status_label.setText(f"Status: Path '{path_name}' already has overlapping patches segmentation")
+                    else:
+                        self.status_label.setText(f"Status: Path '{path_name}' selected for overlapping patches segmentation")
                     
                     # Show color info if this path has an assigned color pair
                     color_info = contrasting_color_manager.get_pair_info(path_id)
@@ -235,10 +271,10 @@ class SegmentationWidget(QWidget):
             self.handling_event = False
     
     def load_segmentation_model(self):
-        """Load the segmentation model"""
+        """Load the segmentation model with overlapping patches"""
         try:
             # Update status
-            self.status_label.setText("Status: Loading model...")
+            self.status_label.setText("Status: Loading overlapping patches dendrite segmentation model...")
             self.load_model_btn.setEnabled(False)
             
             # Initialize segmenter if not already done
@@ -253,23 +289,23 @@ class SegmentationWidget(QWidget):
             success = self.segmenter.load_model()
             
             if success:
-                self.status_label.setText("Status: Model loaded successfully!")
+                self.status_label.setText("Status: Overlapping patches dendrite segmentation model loaded successfully!")
                 self.run_segmentation_btn.setEnabled(len(self.state['paths']) > 0 and hasattr(self, 'selected_path_id'))
-                napari.utils.notifications.show_info("Segmentation model loaded successfully")
+                napari.utils.notifications.show_info("Overlapping patches dendrite segmentation model loaded successfully")
             else:
                 self.status_label.setText("Status: Failed to load model. Check console for errors.")
                 self.load_model_btn.setEnabled(True)
-                napari.utils.notifications.show_info("Failed to load segmentation model")
+                napari.utils.notifications.show_info("Failed to load overlapping patches dendrite segmentation model")
                 
         except Exception as e:
-            error_msg = f"Error loading segmentation model: {str(e)}"
+            error_msg = f"Error loading overlapping patches dendrite segmentation model: {str(e)}"
             self.status_label.setText(f"Status: {error_msg}")
             self.load_model_btn.setEnabled(True)
             napari.utils.notifications.show_info(error_msg)
             print(f"Error details: {str(e)}")
     
     def run_segmentation(self):
-        """Run segmentation on the selected path"""
+        """Run dendrite segmentation with overlapping patches on the selected path"""
         if self.segmenter is None:
             napari.utils.notifications.show_info("Please load the segmentation model first")
             return
@@ -299,14 +335,22 @@ class SegmentationWidget(QWidget):
             path_name = path_data['name']
             brightest_path = path_data['data']
             
-            # Update UI
-            self.status_label.setText(f"Status: Running segmentation on {path_name}...")
-            self.segmentation_progress.setValue(0)
-            self.run_segmentation_btn.setEnabled(False)
-            
             # Get segmentation parameters
             patch_size = self.patch_size_spin.value()
+            enhance_dendrite = self.enhance_dendrite_cb.isChecked()
+            min_dendrite_size = self.min_dendrite_size_spin.value()
             use_full_volume = self.use_full_volume_cb.isChecked()
+            
+            # Update UI
+            enhancement_info = [f"{patch_size}x{patch_size} overlapping patches (50%)"]
+            if enhance_dendrite:
+                enhancement_info.append("tubular dendrite enhancement")
+            
+            enhancement_str = " + ".join(enhancement_info)
+            
+            self.status_label.setText(f"Status: Running overlapping patches dendrite segmentation on {path_name} with {enhancement_str}...")
+            self.segmentation_progress.setValue(0)
+            self.run_segmentation_btn.setEnabled(False)
             
             # Determine volume range
             if use_full_volume:
@@ -318,15 +362,17 @@ class SegmentationWidget(QWidget):
                 start_frame = int(min(z_values))
                 end_frame = int(max(z_values))
             
-            print(f"Segmenting path '{path_name}' from frame {start_frame} to {end_frame}")
+            print(f"Segmenting dendrite path '{path_name}' from frame {start_frame} to {end_frame}")
             print(f"Path has {len(brightest_path)} points")
+            print(f"Parameters: patch_size={patch_size}x{patch_size}, overlap=50% (stride={patch_size//2})")
+            print(f"Dendrite enhancement: {enhance_dendrite}, Min dendrite size: {min_dendrite_size} pixels")
             
             # Progress callback function
             def update_progress(current, total):
                 progress = int((current / total) * 100)
                 self.segmentation_progress.setValue(progress)
             
-            # Try to run the segmentation
+            # Try to run the segmentation with overlapping patches
             result_masks = self.segmenter.process_volume(
                 image=self.image,
                 brightest_path=brightest_path,
@@ -358,7 +404,7 @@ class SegmentationWidget(QWidget):
                 # Get the dendrite color from the contrasting color manager
                 dendrite_color = contrasting_color_manager.get_dendrite_color(path_id)
                 
-                print(f"Adding new segmentation layer: {seg_layer_name}")
+                print(f"Adding new overlapping patches segmentation layer: {seg_layer_name}")
                 print(f"Result masks shape: {binary_masks.shape}")
                 print(f"Result masks type: {binary_masks.dtype}")
                 print(f"Result masks min/max: {binary_masks.min()}/{binary_masks.max()}")
@@ -409,17 +455,26 @@ class SegmentationWidget(QWidget):
                 # Enable export button
                 self.export_dendrite_btn.setEnabled(True)
                 
-                self.status_label.setText(f"Status: Segmentation complete for {path_name}")
-                napari.utils.notifications.show_info(f"Segmentation complete for {path_name} with contrasting color pair")
+                # Update UI with overlapping patches information
+                total_pixels = np.sum(binary_masks)
+                
+                result_text = f"Results: Overlapping patches dendrite segmentation completed - {total_pixels} pixels segmented"
+                result_text += f"\nMethod: {enhancement_str}"
+                result_text += f"\nOverlap: 50% (stride={patch_size//2})"
+                result_text += f"\nMin dendrite size: {min_dendrite_size} pixels"
+                
+                self.status_label.setText(result_text)
+                
+                napari.utils.notifications.show_info(f"Overlapping patches dendrite segmentation complete for {path_name} with contrasting color pair")
                 
                 # Emit signal that segmentation is completed
                 self.segmentation_completed.emit(path_id, seg_layer_name)
             else:
-                self.status_label.setText("Status: Segmentation failed. Check console for errors.")
-                napari.utils.notifications.show_info("Segmentation failed")
+                self.status_label.setText("Status: Overlapping patches dendrite segmentation failed. Check console for errors.")
+                napari.utils.notifications.show_info("Overlapping patches dendrite segmentation failed")
         
         except Exception as e:
-            error_msg = f"Error during segmentation: {str(e)}"
+            error_msg = f"Error during overlapping patches dendrite segmentation: {str(e)}"
             self.status_label.setText(f"Status: {error_msg}")
             napari.utils.notifications.show_info(error_msg)
             print(f"Error details: {str(e)}")
@@ -449,7 +504,7 @@ class SegmentationWidget(QWidget):
             
             # Get directory to save files
             save_dir = QFileDialog.getExistingDirectory(
-                self, "Select Directory to Save Dendrite Masks", ""
+                self, "Select Directory to Save Overlapping Patches Dendrite Masks", ""
             )
             
             if not save_dir:
@@ -475,22 +530,22 @@ class SegmentationWidget(QWidget):
                         mask_data = mask_data * 255  # Scale to 0-255 range
                     
                     # Create filename
-                    filename = f"dendrite_mask_{path_name}_{timestamp}.tif"
+                    filename = f"overlapping_patches_dendrite_mask_{path_name}_{timestamp}.tif"
                     filepath = os.path.join(save_dir, filename)
                     
                     # Save as TIFF
                     tifffile.imwrite(filepath, mask_data)
                     
                     exported_count += 1
-                    print(f"Exported dendrite mask: {filepath}")
+                    print(f"Exported overlapping patches dendrite mask: {filepath}")
                     
                 except Exception as e:
                     print(f"Error exporting mask for {layer.name}: {str(e)}")
                     continue
             
             if exported_count > 0:
-                napari.utils.notifications.show_info(f"Successfully exported {exported_count} dendrite masks to {save_dir}")
-                self.status_label.setText(f"Status: Exported {exported_count} dendrite masks")
+                napari.utils.notifications.show_info(f"Successfully exported {exported_count} overlapping patches dendrite masks to {save_dir}")
+                self.status_label.setText(f"Status: Exported {exported_count} overlapping patches dendrite masks")
             else:
                 napari.utils.notifications.show_info("No dendrite masks were exported due to errors")
                 
