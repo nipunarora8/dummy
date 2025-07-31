@@ -13,9 +13,103 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from contrasting_color_system import contrasting_color_manager
 
+# Import the SpineTracker for smart frame extension of manual points
+from spine_detection_module import SpineTracker
+
+# Simple gradient boundary refinement - no separate module needed
+from scipy import ndimage
+from scipy.ndimage import binary_erosion, binary_dilation, gaussian_filter, binary_fill_holes
+from skimage.filters import sobel, gaussian
+from skimage.morphology import disk, binary_closing, binary_opening
+from skimage.segmentation import watershed
+# from skimage.feature import peak_local_maxima
+
+
+def smooth_spine_boundaries(spine_mask):
+    """
+    Aggressively smooth blocky spine boundaries to create natural shapes
+    Specifically designed to fix severe artifacts like square spines
+    """
+    if not np.any(spine_mask):
+        return spine_mask
+    
+    # Convert to float for smooth operations
+    mask_float = spine_mask.astype(np.float32)
+    
+    # Apply aggressive Gaussian smoothing to eliminate blockiness
+    # Much higher sigma to really smooth out those square artifacts
+    smoothed = gaussian_filter(mask_float, sigma=2.0)
+    
+    # Use a lower threshold to maintain spine size while smoothing
+    smooth_binary = (smoothed > 0.2).astype(np.uint8)
+    
+    # Fill any holes that might have been created
+    filled_mask = binary_fill_holes(smooth_binary)
+    
+    # Apply morphological closing with circular element to make spines round
+    circular_element = disk(2)
+    circular_mask = binary_closing(filled_mask, circular_element)
+    
+    # Final light opening to separate any merged spines
+    final_mask = binary_opening(circular_mask, disk(1))
+    
+    # Fill holes again after opening
+    final_smooth = binary_fill_holes(final_mask)
+    
+    return final_smooth.astype(np.uint8)
+
+
+def fast_refine_spine_boundaries(image, spine_mask):
+    """
+    Aggressive boundary refinement that fixes blocky spine artifacts
+    """
+    if not np.any(spine_mask):
+        return spine_mask
+    
+    # Apply aggressive smoothing to fix blocky artifacts
+    smoothed_mask = smooth_spine_boundaries(spine_mask)
+    
+    # Remove very small objects that might be noise
+    labeled_mask, num_labels = ndimage.label(smoothed_mask)
+    cleaned_mask = smoothed_mask.copy()
+    
+    for label_id in range(1, num_labels + 1):
+        component = (labeled_mask == label_id)
+        if np.sum(component) < 5:  # Remove tiny objects
+            cleaned_mask[component] = 0
+    
+    return cleaned_mask.astype(np.uint8)
+
+
+def fast_refine_spine_volume_boundaries(image_volume, mask_volume, spine_positions):
+    """
+    Fast boundary refinement - only process frames that have spines
+    """
+    refined_volume = mask_volume.copy()
+    
+    # Only process frames that have spines
+    spine_frames = set()
+    for pos in spine_positions:
+        spine_frames.add(int(pos[0]))
+    
+    print(f"Aggressive spine boundary smoothing on {len(spine_frames)} frames with spines...")
+    
+    for z in spine_frames:
+        if 0 <= z < image_volume.shape[0] and np.any(mask_volume[z]):
+            refined_volume[z] = fast_refine_spine_boundaries(image_volume[z], mask_volume[z])
+    
+    # Report changes
+    original_pixels = np.sum(mask_volume > 0)
+    refined_pixels = np.sum(refined_volume > 0)
+    change = refined_pixels - original_pixels
+    
+    print(f"Aggressive smoothing: {original_pixels} -> {refined_pixels} pixels ({change:+d}, {change/original_pixels*100:+.1f}%)")
+    
+    return refined_volume.astype(np.uint8)
+
 
 class SpineSegmentationWidget(QWidget):
-    """Widget for segmenting spines using SAMv2 with overlapping patches"""
+    """Widget for segmenting spines with automatic gradient boundary refinement"""
     
     spine_segmentation_completed = Signal(str, str)  # path_id, layer_name
     
@@ -30,6 +124,12 @@ class SpineSegmentationWidget(QWidget):
 
         self.xy_spacing_nm = self.state.get('xy_spacing_nm', 94.0)
         
+        # Initialize spine tracker for manual point frame extension
+        self.spine_tracker = SpineTracker(
+            min_intensity_ratio=0.3,  # Same as detection module
+            min_distance_separation=8
+        )
+        
         # Flag to prevent recursive event handling
         self.handling_event = False
         
@@ -39,7 +139,7 @@ class SpineSegmentationWidget(QWidget):
     def update_pixel_spacing(self, new_spacing):
         """Update pixel spacing for spine segmentation module"""
         self.pixel_spacing_nm = new_spacing
-        print(f"Overlapping patches spine segmentation: Updated pixel spacing to {new_spacing:.1f} nm/pixel")
+        print(f"Spine segmentation: Updated pixel spacing to {new_spacing:.1f} nm/pixel")
 
     def get_manual_spine_points(self, path_name=None):
         """Get manually clicked spine points from points layers in the viewer."""
@@ -118,18 +218,55 @@ class SpineSegmentationWidget(QWidget):
             print(f"Total manual spine points found for segmentation: {len(manual_points)}")
         
         return manual_points
+
+    def extend_manual_spine_points_across_frames(self, manual_spine_points, frame_range=3):
+        """
+        Extend manual spine points across multiple frames using intensity analysis
+        Same logic as used in spine detection for consistency
+        
+        Args:
+            manual_spine_points: List of manually clicked spine points [z, y, x]
+            frame_range: Number of frames to analyze around each manual point
+            
+        Returns:
+            Extended list of spine positions across multiple frames
+        """
+        if not manual_spine_points:
+            return []
+        
+        print(f"Extending {len(manual_spine_points)} manual spine points across frames...")
+        
+        # Convert manual points to the format expected by SpineTracker
+        manual_spine_objects = []
+        for i, point in enumerate(manual_spine_points):
+            spine_obj = {
+                'z': int(point[0]),
+                'y': int(point[1]), 
+                'x': int(point[2]),
+                'position': np.array([float(point[0]), float(point[1]), float(point[2])])
+            }
+            manual_spine_objects.append(spine_obj)
+        
+        # Use the same smart tracking as spine detection
+        extended_positions = self.spine_tracker.create_spine_tracks(
+            manual_spine_objects, self.image, frame_range
+        )
+        
+        print(f"Extended {len(manual_spine_points)} manual points to {len(extended_positions)} positions across frames")
+        
+        return extended_positions
     
     def setup_ui(self):
-        """Create the UI panel with overlapping patches controls"""
+        """Create the UI panel with simple controls"""
         layout = QVBoxLayout()
         layout.setSpacing(2)
         layout.setContentsMargins(2, 2, 2, 2)
         self.setLayout(layout)
         
         # Title and instructions
-        layout.addWidget(QLabel("<b>Spine Segmentation with Overlapping Patches</b>"))
+        layout.addWidget(QLabel("<b>Spine Segmentation with Aggressive Artifact Removal</b>"))
         layout.addWidget(QLabel("1. Load spine segmentation model\n2. Select a path with detected spines\n3. Optionally add manual spine points\n4. Run spine segmentation"))
-        layout.addWidget(QLabel("<i>Note: Uses 50% overlapping patches + circular shape enhancement</i>"))
+        layout.addWidget(QLabel("<i>Note: Aggressive smoothing fixes blocky/square spine artifacts</i>"))
         
         separator1 = QFrame()
         separator1.setFrameShape(QFrame.HLine)
@@ -155,7 +292,7 @@ class SpineSegmentationWidget(QWidget):
         layout.addWidget(model_section)
         
         # Load model button
-        self.load_model_btn = QPushButton("Load Overlapping Patches Segmentation Model")
+        self.load_model_btn = QPushButton("Load Spine Segmentation Model")
         self.load_model_btn.setFixedHeight(22)
         self.load_model_btn.clicked.connect(self.load_spine_model)
         layout.addWidget(self.load_model_btn)
@@ -172,50 +309,39 @@ class SpineSegmentationWidget(QWidget):
         self.path_list.itemSelectionChanged.connect(self.on_path_selection_changed)
         layout.addWidget(self.path_list)
         
-        # Overlapping patches parameters
-        params_section = QGroupBox("Overlapping Patches Parameters")
+        # Simple parameters
+        params_section = QGroupBox("Segmentation Parameters")
         params_layout = QVBoxLayout()
         params_layout.setSpacing(2)
         params_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Patch size (back to 128x128)
-        patch_size_layout = QHBoxLayout()
-        patch_size_layout.addWidget(QLabel("Patch Size:"))
-        self.patch_size_spin = QSpinBox()
-        self.patch_size_spin.setRange(64, 256)
-        self.patch_size_spin.setSingleStep(32)
-        self.patch_size_spin.setValue(128)  # Back to proven 128x128
-        self.patch_size_spin.setToolTip("Size of overlapping patches (128x128 recommended)")
-        patch_size_layout.addWidget(self.patch_size_spin)
-        params_layout.addLayout(patch_size_layout)
+        # Manual point frame extension
+        manual_frame_layout = QHBoxLayout()
+        manual_frame_layout.addWidget(QLabel("Manual Point Frame Range:"))
+        self.manual_frame_range_spin = QSpinBox()
+        self.manual_frame_range_spin.setRange(1, 5)
+        self.manual_frame_range_spin.setValue(3)
+        self.manual_frame_range_spin.setToolTip("Number of frames to extend manual spine points")
+        manual_frame_layout.addWidget(self.manual_frame_range_spin)
+        params_layout.addLayout(manual_frame_layout)
         
         # Use dendrite mask overlay
-        self.use_dendrite_mask_cb = QCheckBox("Use Dendrite Mask Overlay (img[mask] = 0)")
+        self.use_dendrite_mask_cb = QCheckBox("Use Dendrite Mask Overlay")
         self.use_dendrite_mask_cb.setChecked(True)
         self.use_dendrite_mask_cb.setToolTip("Suppress dendrite signal using dendrite segmentation mask")
         params_layout.addWidget(self.use_dendrite_mask_cb)
         
-        # Circular shape enhancement
-        self.enhance_circular_cb = QCheckBox("Enhance Circular Spine Shapes")
-        self.enhance_circular_cb.setChecked(True)
-        self.enhance_circular_cb.setToolTip("Apply morphological operations to make spines more circular and remove noise")
-        params_layout.addWidget(self.enhance_circular_cb)
+        # Enable gradient refinement (optional)
+        self.enable_gradient_refinement_cb = QCheckBox("Enable Aggressive Boundary Smoothing (fixes blocky spines)")
+        self.enable_gradient_refinement_cb.setChecked(True)  # Enable by default to fix terrible artifacts
+        self.enable_gradient_refinement_cb.setToolTip("Apply aggressive smoothing to fix blocky/square spine artifacts")
+        params_layout.addWidget(self.enable_gradient_refinement_cb)
         
-        # Minimum spine size for noise removal
-        min_size_layout = QHBoxLayout()
-        min_size_layout.addWidget(QLabel("Min Spine Size (pixels):"))
-        self.min_spine_size_spin = QSpinBox()
-        self.min_spine_size_spin.setRange(5, 50)
-        self.min_spine_size_spin.setValue(10)
-        self.min_spine_size_spin.setToolTip("Minimum size of spine objects to keep (removes noise)")
-        min_size_layout.addWidget(self.min_spine_size_spin)
-        params_layout.addLayout(min_size_layout)
-        
-        # Processing method info
-        method_info = QLabel("Method: 50% overlapping patches (stride=64) with adaptive merging\n→ Eliminates boundary artifacts + circular shape enhancement")
-        method_info.setWordWrap(True)
-        method_info.setStyleSheet("color: #0066cc; font-style: italic;")
-        params_layout.addWidget(method_info)
+        # Processing info
+        processing_info = QLabel("Processing: Overlapping patches + aggressive smoothing (fixes square/blocky spines)")
+        processing_info.setWordWrap(True)
+        processing_info.setStyleSheet("color: #0066cc; font-style: italic;")
+        params_layout.addWidget(processing_info)
         
         params_section.setLayout(params_layout)
         layout.addWidget(params_section)
@@ -226,7 +352,7 @@ class SpineSegmentationWidget(QWidget):
         layout.addWidget(separator3)
         
         # Run segmentation button
-        self.run_segmentation_btn = QPushButton("Run Overlapping Patches Segmentation")
+        self.run_segmentation_btn = QPushButton("Run Spine Segmentation")
         self.run_segmentation_btn.setFixedHeight(22)
         self.run_segmentation_btn.clicked.connect(self.run_spine_segmentation)
         self.run_segmentation_btn.setEnabled(False)
@@ -259,9 +385,9 @@ class SpineSegmentationWidget(QWidget):
         layout.addWidget(self.status_label)
     
     def load_spine_model(self):
-        """Load the spine segmentation model with overlapping patches"""
+        """Load the spine segmentation model"""
         try:
-            self.status_label.setText("Status: Loading overlapping patches spine segmentation model...")
+            self.status_label.setText("Status: Loading spine segmentation model...")
             self.load_model_btn.setEnabled(False)
             
             # Initialize segmenter if not already done
@@ -277,16 +403,16 @@ class SpineSegmentationWidget(QWidget):
             success = self.spine_segmenter.load_model()
             
             if success:
-                self.status_label.setText("Status: Overlapping patches spine segmentation model loaded successfully!")
+                self.status_label.setText("Status: Spine segmentation model loaded successfully!")
                 self.update_path_list()  # Update available paths
-                napari.utils.notifications.show_info("Overlapping patches spine segmentation model loaded successfully")
+                napari.utils.notifications.show_info("Spine segmentation model loaded successfully")
             else:
-                self.status_label.setText("Status: Failed to load overlapping patches spine segmentation model")
+                self.status_label.setText("Status: Failed to load spine segmentation model")
                 self.load_model_btn.setEnabled(True)
-                napari.utils.notifications.show_info("Failed to load overlapping patches spine segmentation model")
+                napari.utils.notifications.show_info("Failed to load spine segmentation model")
                 
         except Exception as e:
-            error_msg = f"Error loading overlapping patches spine segmentation model: {str(e)}"
+            error_msg = f"Error loading spine segmentation model: {str(e)}"
             self.status_label.setText(f"Status: {error_msg}")
             self.load_model_btn.setEnabled(True)
             napari.utils.notifications.show_info(error_msg)
@@ -374,9 +500,9 @@ class SpineSegmentationWidget(QWidget):
                             break
                     
                     if has_spine_segmentation:
-                        status_msg = f"Status: Path '{path_name}' already has overlapping patches spine segmentation{manual_info}"
+                        status_msg = f"Status: Path '{path_name}' already has spine segmentation{manual_info}"
                     else:
-                        status_msg = f"Status: Path '{path_name}' selected for overlapping patches spine segmentation{manual_info}"
+                        status_msg = f"Status: Path '{path_name}' selected for spine segmentation{manual_info}"
                         if not has_dendrite_segmentation:
                             status_msg += " (Note: No dendrite segmentation found - will skip mask overlay)"
                     
@@ -401,12 +527,12 @@ class SpineSegmentationWidget(QWidget):
                 self.color_info_label.setText("")
                 
         except Exception as e:
-            napari.utils.notifications.show_info(f"Error handling overlapping patches spine segmentation path selection: {str(e)}")
+            napari.utils.notifications.show_info(f"Error handling spine segmentation path selection: {str(e)}")
         finally:
             self.handling_event = False
     
     def run_spine_segmentation(self):
-        """Run spine segmentation with overlapping patches"""
+        """Run spine segmentation with automatic gradient boundary refinement"""
         if self.spine_segmenter is None:
             napari.utils.notifications.show_info("Please load the spine segmentation model first")
             return
@@ -431,21 +557,13 @@ class SpineSegmentationWidget(QWidget):
             
             # Get segmentation parameters
             use_dendrite_mask = self.use_dendrite_mask_cb.isChecked()
-            enhance_circular = self.enhance_circular_cb.isChecked()
-            min_spine_size = self.min_spine_size_spin.value()
-            patch_size = self.patch_size_spin.value()
+            enable_gradient_refinement = self.enable_gradient_refinement_cb.isChecked()
+            manual_frame_range = self.manual_frame_range_spin.value()
             
-            # Update UI
-            enhancement_info = [f"{patch_size}x{patch_size} overlapping patches (50%)"]
-            if use_dendrite_mask:
-                enhancement_info.append("dendrite suppression")
-            if enhance_circular:
-                enhancement_info.append("circular shape enhancement")
-            
-            enhancement_str = " + ".join(enhancement_info)
             manual_info = f" (including {len(manual_spine_points)} manual points)" if manual_spine_points else ""
+            refinement_info = " with aggressive smoothing" if enable_gradient_refinement else ""
             
-            self.status_label.setText(f"Status: Running overlapping patches spine segmentation on {path_name}{manual_info} with {enhancement_str}...")
+            self.status_label.setText(f"Status: Running spine segmentation on {path_name}{manual_info}{refinement_info}...")
             self.segmentation_progress.setValue(10)
             self.run_segmentation_btn.setEnabled(False)
             
@@ -475,21 +593,34 @@ class SpineSegmentationWidget(QWidget):
                         print(f"Using spine layer by name: {len(spine_positions)} spines")
                         break
             
-            # Add manual spine points to the spine positions
+            # Process manual spine points with frame extension
+            extended_manual_positions = []
             if manual_spine_points and len(manual_spine_points) > 0:
-                if spine_positions is not None:
-                    # Convert to numpy array if needed
-                    if not isinstance(spine_positions, np.ndarray):
-                        spine_positions = np.array(spine_positions)
-                    
-                    # Add manual points to existing spine positions
-                    manual_array = np.array(manual_spine_points)
-                    spine_positions = np.vstack([spine_positions, manual_array])
-                    print(f"Added {len(manual_spine_points)} manual points to {len(spine_positions) - len(manual_spine_points)} detected spines")
-                else:
-                    # Only manual points available
-                    spine_positions = np.array(manual_spine_points)
-                    print(f"Using only {len(manual_spine_points)} manual spine points")
+                print(f"Extending {len(manual_spine_points)} manual spine points across {manual_frame_range} frames...")
+                
+                # Extend manual points across frames using intensity analysis
+                extended_manual_positions = self.extend_manual_spine_points_across_frames(
+                    manual_spine_points, frame_range=manual_frame_range
+                )
+                
+                print(f"Extended manual points: {len(manual_spine_points)} original -> {len(extended_manual_positions)} positions")
+            
+            # Combine detected and extended manual spine positions
+            if spine_positions is not None:
+                # Convert to numpy array if needed
+                if not isinstance(spine_positions, np.ndarray):
+                    spine_positions = np.array(spine_positions)
+                
+                # Add extended manual points to existing spine positions
+                if extended_manual_positions and len(extended_manual_positions) > 0:
+                    extended_manual_array = np.array(extended_manual_positions)
+                    spine_positions = np.vstack([spine_positions, extended_manual_array])
+                    print(f"Combined {len(spine_positions) - len(extended_manual_positions)} detected + {len(extended_manual_positions)} extended manual spine positions")
+            else:
+                # Only extended manual points available
+                if extended_manual_positions and len(extended_manual_positions) > 0:
+                    spine_positions = np.array(extended_manual_positions)
+                    print(f"Using only {len(extended_manual_positions)} extended manual spine positions")
             
             if spine_positions is None or len(spine_positions) == 0:
                 napari.utils.notifications.show_info(f"No spine positions found for {path_name}")
@@ -518,14 +649,18 @@ class SpineSegmentationWidget(QWidget):
             
             self.segmentation_progress.setValue(20)
             
-            print(f"Running overlapping patches spine segmentation on {path_name} with {len(spine_positions)} spine positions")
-            print(f"Parameters: patch_size={patch_size}x{patch_size}, overlap=50% (stride={patch_size//2})")
-            print(f"Dendrite mask: {dendrite_mask is not None}, Circular enhancement: {enhance_circular}")
-            print(f"Min spine size: {min_spine_size} pixels")
+            print(f"Running spine segmentation on {path_name} with {len(spine_positions)} spine positions")
+            print(f"Dendrite mask: {dendrite_mask is not None}")
+            print(f"Aggressive boundary smoothing: {enable_gradient_refinement}")
+            if manual_spine_points:
+                print(f"Manual points: {len(manual_spine_points)} original -> {len(extended_manual_positions)} extended (±{manual_frame_range} frames)")
             
             # Progress callback
             def update_progress(current, total):
-                progress = int(20 + (current / total) * 70)  # 20-90%
+                if enable_gradient_refinement:
+                    progress = int(20 + (current / total) * 50)  # 20-70%
+                else:
+                    progress = int(20 + (current / total) * 70)  # 20-90%
                 self.segmentation_progress.setValue(progress)
             
             # Run overlapping patches spine segmentation
@@ -533,18 +668,28 @@ class SpineSegmentationWidget(QWidget):
                 image=self.image,
                 spine_positions=spine_positions,
                 dendrite_mask=dendrite_mask,  # Pass dendrite mask for suppression
-                patch_size=patch_size,        # Use user-specified patch size
+                patch_size=128,               # Fixed patch size
                 progress_callback=update_progress
             )
             
-            self.segmentation_progress.setValue(90)
+            # Apply boundary smoothing only if requested
+            if enable_gradient_refinement and spine_masks is not None:
+                self.segmentation_progress.setValue(70)
+                print("Applying aggressive boundary smoothing to fix blocky spines...")
+                napari.utils.notifications.show_info("Aggressively smoothing spine boundaries...")
+                
+                refined_masks = fast_refine_spine_volume_boundaries(self.image, spine_masks, spine_positions)
+                spine_masks = refined_masks
+                self.segmentation_progress.setValue(90)
+            elif not enable_gradient_refinement:
+                self.segmentation_progress.setValue(90)
             
             # Process results
             if spine_masks is not None:
                 # Ensure masks are binary
                 binary_spine_masks = (spine_masks > 0).astype(np.uint8)
                 
-                # Create overlapping patches spine segmentation layer
+                # Create spine segmentation layer
                 spine_seg_layer_name = f"Spine Segmentation - {path_name}"
                 
                 # Remove existing layer if it exists
@@ -556,15 +701,12 @@ class SpineSegmentationWidget(QWidget):
                 # Get the contrasting spine color for this path
                 spine_neon_color = contrasting_color_manager.get_spine_color(path_id)
                 
-                print(f"Adding overlapping patches spine segmentation layer: {spine_seg_layer_name}")
+                print(f"Adding spine segmentation layer: {spine_seg_layer_name}")
                 print(f"Spine masks shape: {binary_spine_masks.shape}")
-                print(f"Spine masks type: {binary_spine_masks.dtype}")
-                print(f"Spine masks min/max: {binary_spine_masks.min()}/{binary_spine_masks.max()}")
                 print(f"Total segmented pixels: {np.sum(binary_spine_masks)}")
                 print(f"Using contrasting neon color: {spine_neon_color}")
                 
                 # Create the spine segmentation layer using add_image with proper colormap
-                # Convert binary masks to float and scale to color range
                 color_spine_masks = binary_spine_masks.astype(np.float32)
                 color_spine_masks[color_spine_masks > 0] = 1.0  # Ensure binary values
                 
@@ -585,12 +727,7 @@ class SpineSegmentationWidget(QWidget):
                 
                 # Apply the custom neon colormap
                 spine_segmentation_layer.colormap = custom_neon_cmap
-                
-                # Set contrast limits to ensure proper color mapping
                 spine_segmentation_layer.contrast_limits = [0, 1]
-                
-                print(f"Applied custom neon colormap: {custom_neon_cmap}")
-                print(f"Spine layer contrast limits: {spine_segmentation_layer.contrast_limits}")
                 
                 # Store reference in state
                 if 'spine_segmentation_layers' not in self.state:
@@ -610,44 +747,50 @@ class SpineSegmentationWidget(QWidget):
                 # Enable export button
                 self.export_spine_btn.setEnabled(True)
                 
-                # Update UI with overlapping patches information
+                # Update UI with segmentation information
                 total_pixels = np.sum(binary_spine_masks)
                 manual_count = len(manual_spine_points) if manual_spine_points else 0
-                detected_count = len(spine_positions) - manual_count
+                extended_manual_count = len(extended_manual_positions)
+                detected_count = len(spine_positions) - extended_manual_count
                 
-                result_text = f"Results: Overlapping patches spine segmentation completed - {total_pixels} pixels segmented"
+                result_text = f"Results: Spine segmentation completed - {total_pixels} pixels segmented"
                 if manual_count > 0:
-                    result_text += f"\nUsed {detected_count} detected + {manual_count} manual spine positions"
+                    result_text += f"\nUsed {detected_count} detected + {manual_count} manual spine points"
+                    result_text += f"\nManual points extended to {extended_manual_count} positions across frames"
                 else:
                     result_text += f"\nUsed {detected_count} detected spine positions"
                 
-                result_text += f"\nMethod: {enhancement_str}"
-                result_text += f"\nOverlap: 50% (stride={patch_size//2})"
+                if enable_gradient_refinement:
+                    result_text += f"\nProcessing: Overlapping patches + aggressive boundary smoothing"
+                else:
+                    result_text += f"\nProcessing: Overlapping patches only (WARNING: May have blocky artifacts)"
+                
                 if dendrite_mask is not None:
                     result_text += f"\nDendrite suppression: {np.sum(dendrite_mask > 0)} pixels masked"
                 
                 self.results_label.setText(result_text)
-                self.status_label.setText(f"Status: Overlapping patches spine segmentation completed for {path_name}")
+                self.status_label.setText(f"Status: Spine segmentation completed for {path_name}")
                 
                 # Create comprehensive notification
-                notification_msg = f"Overlapping patches spine segmentation completed for {path_name}"
+                notification_msg = f"Spine segmentation completed for {path_name}"
                 if manual_count > 0:
-                    notification_msg += f" (including {manual_count} manual points)"
-                notification_msg += f" with circular enhancement and noise removal"
+                    notification_msg += f" (including {manual_count} manual points extended to {extended_manual_count} positions)"
+                if enable_gradient_refinement:
+                    notification_msg += " with aggressive boundary smoothing"
                 
                 napari.utils.notifications.show_info(notification_msg)
                 
                 # Emit signal that spine segmentation is completed
                 self.spine_segmentation_completed.emit(path_id, spine_seg_layer_name)
             else:
-                self.results_label.setText("Results: Overlapping patches spine segmentation failed")
-                self.status_label.setText("Status: Overlapping patches spine segmentation failed. Check console for errors.")
-                napari.utils.notifications.show_info("Overlapping patches spine segmentation failed")
+                self.results_label.setText("Results: Spine segmentation failed")
+                self.status_label.setText("Status: Spine segmentation failed. Check console for errors.")
+                napari.utils.notifications.show_info("Spine segmentation failed")
         
         except Exception as e:
-            error_msg = f"Error during overlapping patches spine segmentation: {str(e)}"
+            error_msg = f"Error during spine segmentation: {str(e)}"
             self.status_label.setText(f"Status: {error_msg}")
-            self.results_label.setText("Results: Error during overlapping patches spine segmentation")
+            self.results_label.setText("Results: Error during spine segmentation")
             napari.utils.notifications.show_info(error_msg)
             print(f"Error details: {str(e)}")
             import traceback
@@ -676,7 +819,7 @@ class SpineSegmentationWidget(QWidget):
             
             # Get directory to save files
             save_dir = QFileDialog.getExistingDirectory(
-                self, "Select Directory to Save Overlapping Patches Spine Masks", ""
+                self, "Select Directory to Save Spine Masks", ""
             )
             
             if not save_dir:
@@ -702,22 +845,22 @@ class SpineSegmentationWidget(QWidget):
                         mask_data = mask_data * 255  # Scale to 0-255 range
                     
                     # Create filename
-                    filename = f"overlapping_patches_spine_mask_{path_name}_{timestamp}.tif"
+                    filename = f"spine_mask_{path_name}_{timestamp}.tif"
                     filepath = os.path.join(save_dir, filename)
                     
                     # Save as TIFF
                     tifffile.imwrite(filepath, mask_data)
                     
                     exported_count += 1
-                    print(f"Exported overlapping patches spine mask: {filepath}")
+                    print(f"Exported spine mask: {filepath}")
                     
                 except Exception as e:
                     print(f"Error exporting mask for {layer.name}: {str(e)}")
                     continue
             
             if exported_count > 0:
-                napari.utils.notifications.show_info(f"Successfully exported {exported_count} overlapping patches spine masks to {save_dir}")
-                self.status_label.setText(f"Status: Exported {exported_count} overlapping patches spine masks")
+                napari.utils.notifications.show_info(f"Successfully exported {exported_count} spine masks to {save_dir}")
+                self.status_label.setText(f"Status: Exported {exported_count} spine masks")
             else:
                 napari.utils.notifications.show_info("No spine masks were exported due to errors")
                 
