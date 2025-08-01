@@ -344,7 +344,7 @@ class SpineSegmenter:
             frame_dendrite_mask = dendrite_mask[frame_idx]
         
         # Generate overlapping patches with 50% overlap (stride = 64)
-        stride = patch_size // 2  # 50% overlap
+        stride = 96  # 50% overlap
         patch_coords = self.generate_overlapping_patches((height, width), patch_size, stride)
         
         all_patch_masks = []
