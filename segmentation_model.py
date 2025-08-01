@@ -425,7 +425,7 @@ class DendriteSegmenter:
         height, width = image[frame_idx].shape
         
         # Generate overlapping patches with 50% overlap
-        stride = 96  # 50% overlap
+        stride = patch_size // 2  # 50% overlap
         patch_coords = self.generate_overlapping_patches((height, width), patch_size, stride)
         
         all_patch_masks = []
